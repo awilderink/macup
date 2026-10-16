@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const unreadableXattrs = "--filter=-x com.apple.macl"
+
 var errNoRsync = errors.New("GNU rsync not found — run `macup apply` first so it can be fetched through Nix (macOS's built-in openrsync is not reliable enough for this)")
 
 func findRsync(e env) (string, error) {

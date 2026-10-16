@@ -39,7 +39,7 @@ func TestEmbeddedRulesSelectTheRightFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Remove(rules)
-	out, err := exec.Command(bin, "-a", "-n", "--out-format=%n", "--filter=merge "+rules, home+"/", t.TempDir()+"/").Output()
+	out, err := exec.Command(bin, "-aX", "-n", "--out-format=%n", unreadableXattrs, "--filter=merge "+rules, home+"/", t.TempDir()+"/").Output()
 	if err != nil {
 		t.Fatal(err)
 	}

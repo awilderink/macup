@@ -62,7 +62,7 @@ func backupMenu(e env) error {
 }
 
 func backupArgs(e env, o backupOptions, rules string) []string {
-	args := []string{"-ahXN", "--info=progress2"}
+	args := []string{"-ahXN", "--info=progress2", unreadableXattrs}
 	if o.dryRun {
 		args = append(args, "--dry-run")
 	}
@@ -178,6 +178,11 @@ func runBackup(e env, o backupOptions) error {
 		return err
 	}
 	defer os.Remove(rules)
+	if !o.dryRun {
+		if err := checkFullDiskAccess(e, "backup", o.yes); err != nil {
+			return err
+		}
+	}
 	if !o.photosOnly {
 		if err := confirmFirstBackup(e, o); err != nil {
 			return err

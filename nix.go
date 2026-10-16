@@ -374,6 +374,14 @@ func cmdStatus(e env, _ []string) error {
 	}
 	row("Last backup", lastBackup(e))
 	row("Photos", lastPhotoBackup(e))
+	switch granted, known := hasFullDiskAccess(e.home); {
+	case !known:
+		row("Disk access", "unknown")
+	case granted:
+		row("Disk access", terminalName()+" has Full Disk Access")
+	default:
+		row("Disk access", styleWarn.Render(terminalName()+" lacks Full Disk Access — backups will miss protected folders"))
+	}
 	if nix := findNix(); nix != "" {
 		out, _ := exec.Command(nix, "--version").Output()
 		row("Nix", firstLine(out))

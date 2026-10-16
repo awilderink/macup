@@ -191,7 +191,7 @@ func writeFileList(paths []string) (string, error) {
 }
 
 func restoreArgs(list, src, target string, m conflictMode, extra ...string) []string {
-	args := []string{"-ahXN", "-r", "--from0", "--files-from=" + list}
+	args := []string{"-ahXN", "-r", unreadableXattrs, "--from0", "--files-from=" + list}
 	args = append(args, m.flag()...)
 	args = append(args, extra...)
 	return append(args, strings.TrimSuffix(src, "/")+"/", strings.TrimSuffix(target, "/")+"/")
@@ -285,6 +285,12 @@ func runRestore(e env, bin, src, target string, paths []string, m conflictMode) 
 		return err
 	}
 	defer os.Remove(list)
+	for _, p := range paths {
+		if p == "Library" || strings.HasPrefix(p, "Library/") {
+			checkFullDiskAccess(e, "restore", true)
+			break
+		}
+	}
 	l, err := acquireLock(e.lockDir())
 	if err != nil {
 		return err

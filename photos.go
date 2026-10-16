@@ -87,7 +87,7 @@ func checkLibraryNotShrunk(l photoLibrary, srcItems int) error {
 }
 
 func photoArgs(l photoLibrary, extra ...string) []string {
-	args := []string{"-ahXN", "--delete",
+	args := []string{"-ahXN", "--delete", unreadableXattrs,
 		"--filter=- /database/Photos.sqlite*",
 		"--filter=H /resources/cpl/",
 	}
