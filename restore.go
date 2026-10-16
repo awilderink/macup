@@ -56,7 +56,6 @@ func cmdRestore(e env, args []string) error {
 	var paths multiFlag
 	fs.Var(&paths, "path", "path inside the backup to restore, e.g. .ssh or Documents/taxes (repeatable)")
 	target := fs.String("target", e.home, "where to restore to")
-	from := fs.String("from", "", "which backed-up home to restore from (default: "+e.user+")")
 	mode := fs.String("mode", string(keepNewer), "when a file already exists: update (keep newer local files), missing (never touch existing files), overwrite")
 	dry := fs.Bool("dry-run", false, "only show what would be restored")
 	fs.BoolVar(dry, "n", false, "shorthand for --dry-run")
@@ -68,7 +67,7 @@ func cmdRestore(e env, args []string) error {
 	if m != keepNewer && m != onlyMissing && m != overwrite {
 		return fmt.Errorf("unknown --mode %q", *mode)
 	}
-	src, err := restoreSource(e, *from)
+	src, err := restoreSource(e)
 	if err != nil {
 		return err
 	}
@@ -108,44 +107,15 @@ func cmdRestore(e env, args []string) error {
 	return runRestore(e, bin, src, *target, paths, m)
 }
 
-func restoreSource(e env, from string) (string, error) {
-	if from != "" {
-		src := filepath.Join(e.backupsDir(), from)
-		if _, err := os.Stat(src); err != nil {
-			return "", fmt.Errorf("no backup named %q in %s", from, e.backupsDir())
-		}
-		return src, nil
+func restoreSource(e env) (string, error) {
+	if _, err := os.Stat(e.backupHome()); err != nil {
+		return "", fmt.Errorf("no backup at %s — is the drive connected?", e.backupHome())
 	}
-	if _, err := os.Stat(e.backupHome()); err == nil {
-		return e.backupHome(), nil
-	}
-	entries, err := os.ReadDir(e.backupsDir())
-	if err != nil {
-		return "", fmt.Errorf("no backups found in %s — is the drive connected?", e.backupsDir())
-	}
-	var names []string
-	for _, en := range entries {
-		if en.IsDir() {
-			names = append(names, en.Name())
-		}
-	}
-	switch {
-	case len(names) == 1:
-		return filepath.Join(e.backupsDir(), names[0]), nil
-	case len(names) == 0:
-		return "", fmt.Errorf("no backups found in %s", e.backupsDir())
-	case !interactive():
-		return "", fmt.Errorf("several backups found (%s); pick one with --from", strings.Join(names, ", "))
-	}
-	choice := names[0]
-	if err := huh.NewSelect[string]().Title("Which backup?").Options(huh.NewOptions(names...)...).Value(&choice).Run(); err != nil {
-		return "", err
-	}
-	return filepath.Join(e.backupsDir(), choice), nil
+	return e.backupHome(), nil
 }
 
 func restoreMenu(e env) error {
-	src, err := restoreSource(e, "")
+	src, err := restoreSource(e)
 	if err != nil {
 		return err
 	}

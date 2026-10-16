@@ -34,10 +34,8 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func (e env) backupsDir() string   { return filepath.Join(e.volume, "Users") }
-func (e env) backupHome() string   { return filepath.Join(e.backupsDir(), e.user) }
-func (e env) bootstrapDir() string { return filepath.Join(e.volume, "MacBootstrap") }
-func (e env) driveNixDir() string  { return filepath.Join(e.bootstrapDir(), "nix-darwin") }
-func (e env) nixDir() string       { return filepath.Join(e.home, ".config", "nix-darwin") }
-func (e env) logDir() string       { return filepath.Join(e.home, ".backup-logs") }
-func (e env) lockDir() string      { return filepath.Join(e.volume, ".backup.lock") }
+func (e env) backupHome() string  { return filepath.Join(e.volume, "home") }
+func (e env) driveNixDir() string { return filepath.Join(e.volume, "nix-darwin") }
+func (e env) nixDir() string      { return filepath.Join(e.home, ".config", "nix-darwin") }
+func (e env) logDir() string      { return filepath.Join(e.home, ".backup-logs") }
+func (e env) lockDir() string     { return filepath.Join(e.volume, ".backup.lock") }

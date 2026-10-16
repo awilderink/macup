@@ -8,7 +8,7 @@ nix --extra-experimental-features 'nix-command flakes' shell nixpkgs#go -c sh -c
   CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o '$out' .
 "
 print "built $out"
-if [[ -d /Volumes/Backup/Users ]]; then
+if [[ -d /Volumes/Backup/home ]]; then
   cp "$out" /Volumes/Backup/macup
   print "copied to /Volumes/Backup/macup"
 fi
