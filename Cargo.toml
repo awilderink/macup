@@ -19,6 +19,7 @@ objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL"
 objc2-photos = { version = "0.3", features = ["PHAsset", "PHAssetResource", "PHAssetResourceManager", "PHFetchResult", "PHPhotoLibrary", "PHObject", "PhotosTypes", "PHFetchOptions", "block2"] }
 ratatui = "0.30"
 regex = "1"
+rnix = "0.14.0"
 rusqlite = "0.40"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"

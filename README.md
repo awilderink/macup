@@ -57,8 +57,8 @@ With "Optimize Mac Storage" on, a photo whose original was never downloaded to t
 | --- | --- |
 | Back up the home folder | `macup backup` (`-n` previews, `--mirror` also removes files you deleted and shows how many first). The first backup from a Mac whose drive already holds a backup asks before overwriting it, so restore first. |
 | Restore specific paths without the picker | `macup restore --path .ssh --path Documents/taxes` |
-| Add / remove a command-line tool | `macup add htop`, `macup remove htop` |
-| Add a Mac app from Homebrew | `macup add --app firefox` |
+| Add / remove a command-line tool (edits the `home.packages` list in whichever `.nix` file has it, keeping formatting and comments) | `macup add htop`, `macup remove htop` |
+| Add a Mac app from Homebrew (edits `homebrew.casks`) | `macup add --app firefox` |
 | Edit the Nix config by hand | `macup edit` |
 | Rebuild after editing | `macup apply` |
 | Update all packages | `macup apply --update` |
