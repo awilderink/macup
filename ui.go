@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
+	hspinner "github.com/charmbracelet/huh/spinner"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-isatty"
 )
@@ -34,6 +35,14 @@ func step(format string, a ...any) { fmt.Println(styleStep.Render("==> ") + fmt.
 func ok(format string, a ...any)   { fmt.Println(styleOK.Render("✓ ") + fmt.Sprintf(format, a...)) }
 func warn(format string, a ...any) { fmt.Println(styleWarn.Render("! ") + fmt.Sprintf(format, a...)) }
 func note(format string, a ...any) { fmt.Println(styleDim.Render("  " + fmt.Sprintf(format, a...))) }
+
+func withSpinner(title string, action func()) error {
+	if !interactive() {
+		action()
+		return nil
+	}
+	return hspinner.New().Title(" " + title).Action(action).Run()
+}
 
 func confirm(title, description string, def bool) (bool, error) {
 	if !interactive() {

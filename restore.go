@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/huh/spinner"
 )
 
 type conflictMode string
@@ -186,11 +185,7 @@ func planWithSpinner(bin, src, target string, paths []string) (restorePlan, erro
 	var plan restorePlan
 	var err error
 	action := func() { plan, err = planRestore(bin, src, target, paths) }
-	if !interactive() {
-		action()
-		return plan, err
-	}
-	if serr := spinner.New().Title(" Comparing the backup with " + target + "…").Action(action).Run(); serr != nil {
+	if serr := withSpinner("Comparing the backup with "+target+"…", action); serr != nil {
 		return plan, serr
 	}
 	return plan, err

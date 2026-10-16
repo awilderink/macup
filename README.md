@@ -38,7 +38,7 @@ The binary lives in the root of the backup drive (`/Volumes/Backup/macup`) so it
 
 | Task | Command |
 | --- | --- |
-| Back up the home folder | `macup backup` (`-n` previews, `--mirror` also removes files you deleted) |
+| Back up the home folder | `macup backup` (`-n` previews, `--mirror` also removes files you deleted and shows how many first). The first backup from a Mac whose drive already holds a backup asks before overwriting it, so restore first. |
 | Restore specific paths without the picker | `macup restore --path .ssh --path Documents/taxes` |
 | Add / remove a command-line tool | `macup add htop`, `macup remove htop` |
 | Add a Mac app from Homebrew | `macup add --app firefox` |

@@ -400,7 +400,7 @@ func cmdStatus(e env, _ []string) error {
 	return nil
 }
 
-func lastBackup(e env) string {
+func lastRealBackupLog(e env) (string, bool) {
 	logs, _ := filepath.Glob(filepath.Join(e.logDir(), "backup-*.log"))
 	for i := len(logs) - 1; i >= 0; i-- {
 		data, err := os.ReadFile(logs[i])
@@ -408,10 +408,18 @@ func lastBackup(e env) string {
 			continue
 		}
 		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if strings.Contains(lines[0], "--dry-run") {
+		last := lines[len(lines)-1]
+		if strings.Contains(lines[0], "--dry-run") || !strings.Contains(last, ": finished") {
 			continue
 		}
-		return lines[len(lines)-1]
+		return last, true
+	}
+	return "", false
+}
+
+func lastBackup(e env) string {
+	if last, found := lastRealBackupLog(e); found {
+		return last
 	}
 	if info, err := os.Stat(e.backupHome()); err == nil {
 		return "unknown (backup folder last changed " + info.ModTime().Format("2006-01-02 15:04") + ")"
