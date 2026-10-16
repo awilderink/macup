@@ -118,3 +118,73 @@ fn a_file_that_does_not_parse_is_an_error() {
     .unwrap_err();
     assert!(err.to_string().contains("cannot parse"), "{err}");
 }
+
+fn found() -> Lookup {
+    Lookup::Found("1.0".into())
+}
+
+fn unknown() -> Lookup {
+    Lookup::Unknown("offline".into())
+}
+
+// A name that is both a Mac app and a nixpkgs package (docker, ollama,
+// tailscale) is almost always meant as the app on a Mac.
+#[test]
+fn a_mac_app_wins_over_a_package_of_the_same_name() {
+    assert_eq!(decide(&found(), &found()), Decision::Use(Kind::App));
+    assert_eq!(decide(&Lookup::Missing, &found()), Decision::Use(Kind::App));
+    assert_eq!(
+        decide(&found(), &Lookup::Missing),
+        Decision::Use(Kind::Tool)
+    );
+    assert_eq!(decide(&found(), &unknown()), Decision::Use(Kind::Tool));
+}
+
+// Guessing while one side could not be checked would quietly add the wrong
+// kind of thing, so it must stop and ask for --tool or --app instead.
+#[test]
+fn does_not_guess_when_a_lookup_failed_and_the_other_found_nothing() {
+    assert_eq!(
+        decide(&Lookup::Missing, &Lookup::Missing),
+        Decision::NotFound
+    );
+    assert_eq!(decide(&unknown(), &Lookup::Missing), Decision::CannotTell);
+    assert_eq!(decide(&Lookup::Missing, &unknown()), Decision::CannotTell);
+    assert_eq!(decide(&unknown(), &unknown()), Decision::CannotTell);
+}
+
+// One `add` can touch home.nix and flake.nix; nothing may be written until
+// every edit has been worked out, and edits to one file must stack.
+#[test]
+fn workspace_edits_lists_in_several_files_and_writes_only_on_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home.nix");
+    let flake = dir.path().join("flake.nix");
+    std::fs::write(&home, HOME_NIX).unwrap();
+    let flake_src = "{ homebrew = { casks = [ \"ghostty\" ]; brews = [ \"spaceship\" ]; }; }\n";
+    std::fs::write(&flake, flake_src).unwrap();
+    let mut ws = Workspace::open(dir.path()).unwrap();
+    assert!(ws.contains(&BREWS, "spaceship").unwrap());
+    assert!(!ws.contains(&CASKS, "spaceship").unwrap());
+    let (file, changed) = ws.edit(&PACKAGES, &names(&["jq"]), true).unwrap().unwrap();
+    assert_eq!((file.as_str(), changed), ("home.nix", names(&["jq"])));
+    ws.edit(&CASKS, &names(&["firefox"]), true).unwrap();
+    ws.edit(&BREWS, &names(&["spaceship"]), false).unwrap();
+    assert_eq!(std::fs::read_to_string(&flake).unwrap(), flake_src);
+    ws.save().unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&flake).unwrap(),
+        "{ homebrew = { casks = [ \"firefox\" \"ghostty\" ]; brews = [ ]; }; }\n"
+    );
+    assert!(std::fs::read_to_string(&home).unwrap().contains("    jq\n"));
+}
+
+#[test]
+fn a_list_defined_in_two_files_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.nix"), HOME_NIX).unwrap();
+    std::fs::write(dir.path().join("b.nix"), HOME_NIX).unwrap();
+    let ws = Workspace::open(dir.path()).unwrap();
+    let err = ws.find(&PACKAGES).unwrap_err().to_string();
+    assert!(err.contains("a.nix, b.nix"), "{err}");
+}

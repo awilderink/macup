@@ -54,3 +54,29 @@ fn formats_aligned_lines_and_shortens_long_descriptions() {
         "{out}"
     );
 }
+
+#[test]
+fn reads_the_cask_version_from_brew_and_from_the_api() {
+    let brew =
+        br#"{"formulae":[],"casks":[{"token":"rekordbox","version":"7.2.19,20260914095016"}]}"#;
+    assert_eq!(cask_version(brew).as_deref(), Some("7.2.19"));
+    let api = br#"{"token":"firefox","version":"144.0"}"#;
+    assert_eq!(cask_version(api).as_deref(), Some("144.0"));
+}
+
+#[test]
+fn suggests_close_and_containing_names() {
+    let names = [
+        "firefox",
+        "firefox@beta",
+        "firefly",
+        "brave-browser",
+        "rekordbox",
+    ];
+    assert_eq!(similar("firefx", names.into_iter()), ["firefox", "firefly"]);
+    assert_eq!(
+        similar("firefox", names.into_iter()),
+        ["firefly", "firefox@beta"]
+    );
+    assert!(similar("zzqqxx", names.into_iter()).is_empty());
+}

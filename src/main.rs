@@ -115,25 +115,21 @@ enum Command {
         )]
         check: bool,
     },
-    #[command(about = "Add a command-line tool (or a Homebrew app) and apply")]
+    #[command(
+        about = "Add a command-line tool or a Mac app; macup works out which and offers to install it"
+    )]
     Add {
-        #[arg(
-            long,
-            help = "a Mac app from Homebrew (cask) instead of a command-line tool"
-        )]
-        app: bool,
+        #[command(flatten)]
+        kind: KindFlags,
         names: Vec<String>,
     },
     #[command(
         visible_alias = "rm",
-        about = "Remove a command-line tool (or a Homebrew app) and apply"
+        about = "Remove a command-line tool or a Mac app from your config and offer to uninstall it"
     )]
     Remove {
-        #[arg(
-            long,
-            help = "a Mac app from Homebrew (cask) instead of a command-line tool"
-        )]
-        app: bool,
+        #[command(flatten)]
+        kind: KindFlags,
         names: Vec<String>,
     },
     #[command(about = "Open the Nix config in your editor: packages, apps or system")]
@@ -155,6 +151,28 @@ enum Command {
         )]
         test_icloud: bool,
     },
+}
+
+#[derive(clap::Args)]
+struct KindFlags {
+    #[arg(
+        long,
+        conflicts_with = "tool",
+        help = "only look for a Mac app (Homebrew cask)"
+    )]
+    app: bool,
+    #[arg(long, help = "only look for a command-line tool (nixpkgs)")]
+    tool: bool,
+}
+
+impl KindFlags {
+    fn forced(&self) -> Option<packages::Kind> {
+        match (self.app, self.tool) {
+            (true, _) => Some(packages::Kind::App),
+            (_, true) => Some(packages::Kind::Tool),
+            _ => None,
+        }
+    }
 }
 
 fn main() {
@@ -221,8 +239,8 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
             },
         ),
         Command::Apply { update, check } => nix::apply(e, update, check),
-        Command::Add { app, names } => packages::change(e, &names, app, true),
-        Command::Remove { app, names } => packages::change(e, &names, app, false),
+        Command::Add { kind, names } => packages::add(e, &names, kind.forced()),
+        Command::Remove { kind, names } => packages::remove(e, &names, kind.forced()),
         Command::Edit { section } => nix::edit(e, section),
         Command::Photos { test_icloud } => photos::report(e, test_icloud),
         Command::Init { drive } => init(&drive),
@@ -290,18 +308,11 @@ fn menu(e: &Env) -> Result<()> {
 }
 
 fn add_menu(e: &Env) -> Result<()> {
-    let app = ui::select(
-        "What kind?",
-        &[
-            ("Command-line tool from nixpkgs".into(), false),
-            ("Mac app from Homebrew".into(), true),
-        ],
-    )?;
-    let name = ui::input("Name (e.g. htop, or firefox for an app)")?;
+    let name = ui::input("Name of the tool or app (e.g. htop or firefox)")?;
     if name.trim().is_empty() {
         return Err(errors::cancelled());
     }
-    packages::change(e, &[name.trim().to_string()], app, true)
+    packages::add(e, &[name.trim().to_string()], None)
 }
 
 fn init(drive: &std::path::Path) -> Result<()> {

@@ -57,14 +57,16 @@ With "Optimize Mac Storage" on, a photo whose original was never downloaded to t
 | --- | --- |
 | Back up the home folder | `macup backup` (`-n` previews, `--mirror` also removes files you deleted and shows how many first). The first backup from a Mac whose drive already holds a backup asks before overwriting it, so restore first. |
 | Restore specific paths without the picker | `macup restore --path .ssh --path Documents/taxes` |
-| Add / remove a command-line tool (edits the `home.packages` list in whichever `.nix` file has it, keeping formatting and comments) | `macup add htop`, `macup remove htop` |
-| Add a Mac app from Homebrew (edits `homebrew.casks`) | `macup add --app firefox` |
+| Add a command-line tool or a Mac app | `macup add htop firefox` |
+| Remove one (and offer to uninstall Homebrew apps) | `macup remove firefox` |
 | Edit the Nix config by hand | `macup edit` |
 | Rebuild after editing | `macup apply` |
 | Update all packages | `macup apply --update` |
 | Check the config builds without changing anything | `macup apply --check` |
 | Overview | `macup status` |
 | Photos coverage | `macup photos` |
+
+`macup add` works out what each name is: a Mac app from Homebrew (`homebrew.casks`) when Homebrew has one, otherwise a command-line tool from nixpkgs (`home.packages`). When both exist it picks the app and says so; `--tool` or `--app` decides instead. It edits the list in whichever `.nix` file has it, keeping formatting and comments, and writes nothing unless every name was found; an unknown name lists the closest matches from search.nixos.org and Homebrew. `macup remove` takes a name out of `home.packages`, `homebrew.casks` or `homebrew.brews`. Homebrew is set up with `cleanup = "none"`, so removing an app from the config does not uninstall it; `macup remove` offers to, and also offers it for apps installed by hand with `brew`.
 
 `~/.config/nix-darwin` is the config you edit; `macup apply` and `macup backup` copy it to `/Volumes/Backup/nix-darwin` so a fresh Mac can start from it.
 
