@@ -35,6 +35,15 @@ type restorePlan struct {
 	newBytes, changedBytes       int64
 	newerHereBytes               int64
 	newerSamples                 []string
+	skippedLibraries             []string
+}
+
+func libraryRoot(name string) (string, bool) {
+	i := strings.Index(name, ".photoslibrary/")
+	if i < 0 {
+		return "", false
+	}
+	return name[:i+len(".photoslibrary")], true
 }
 
 func (p restorePlan) bytesFor(m conflictMode) int64 {
@@ -156,7 +165,7 @@ func restorePaths(e env, target string, paths []string, m conflictMode, dry, yes
 			return err
 		}
 	}
-	return runRestore(e, bin, target, paths, m)
+	return runRestore(e, bin, target, paths, m, plan.skippedLibraries...)
 }
 
 func chooseMode(plan restorePlan) (conflictMode, error) {
@@ -173,8 +182,11 @@ func writeFileList(paths []string) (string, error) {
 	return writeTemp("macup-restore-*.list", []byte(strings.Join(paths, "\x00")+"\x00"))
 }
 
-func restoreArgs(e env, list, target string, m conflictMode) []string {
+func restoreArgs(e env, list, target string, m conflictMode, skip ...string) []string {
 	args := rsyncArgs("-r", "--from0", "--files-from="+list)
+	for _, lib := range skip {
+		args = append(args, "--exclude=/"+lib+"/")
+	}
 	args = append(args, m.flag()...)
 	return append(args, e.backupHome()+"/", strings.TrimSuffix(target, "/")+"/")
 }
@@ -193,6 +205,15 @@ func planRestore(e env, bin, target string, paths []string) (restorePlan, error)
 }
 
 func (p *restorePlan) add(it rsyncItem, src, target string) {
+	if root, inLibrary := libraryRoot(it.name); inLibrary {
+		if slices.Contains(p.skippedLibraries, root) {
+			return
+		}
+		if _, err := os.Stat(filepath.Join(target, root)); err == nil {
+			p.skippedLibraries = append(p.skippedLibraries, root)
+			return
+		}
+	}
 	if !it.file() {
 		return
 	}
@@ -216,6 +237,9 @@ func (p *restorePlan) add(it rsyncItem, src, target string) {
 
 func printPlan(p restorePlan) {
 	step("Restore preview")
+	for _, lib := range p.skippedLibraries {
+		warn("skipping %s: a Photos library already exists there, and copying another library into it would damage it", lib)
+	}
 	note("%s (%s)", plural(p.newFiles, "new file"), humanBytes(p.newBytes))
 	note("%s differ from this Mac (%s)", plural(p.changed, "file"), humanBytes(p.changedBytes))
 	if p.newerHere > 0 {
@@ -233,7 +257,7 @@ func touches(paths []string, dir string) bool {
 	return slices.ContainsFunc(paths, func(p string) bool { return p == dir || isUnder(p, dir) })
 }
 
-func runRestore(e env, bin, target string, paths []string, m conflictMode) error {
+func runRestore(e env, bin, target string, paths []string, m conflictMode, skip ...string) error {
 	list, err := writeFileList(paths)
 	if err != nil {
 		return err
@@ -249,7 +273,7 @@ func runRestore(e env, bin, target string, paths []string, m conflictMode) error
 		return err
 	}
 	defer l.release()
-	job := rsyncJob{bin: bin, args: restoreArgs(e, list, target, m), logPath: logPath(e, "restore")}
+	job := rsyncJob{bin: bin, args: restoreArgs(e, list, target, m, skip...), logPath: logPath(e, "restore")}
 	res, err := runJob(fmt.Sprintf("Restoring %s into %s", plural(len(paths), "item"), target), job)
 	if err != nil {
 		return err

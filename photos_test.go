@@ -172,3 +172,30 @@ func TestPhotoRestoreNeverOverwritesAnExistingLibrary(t *testing.T) {
 		t.Fatal("an existing library was overwritten")
 	}
 }
+
+// Restoring a folder that contains a Photos library must never copy the
+// backed-up library into one that already exists on this Mac: two libraries'
+// databases and originals would be mixed and the current one damaged.
+func TestRestoreSkipsAnExistingPhotosLibrary(t *testing.T) {
+	e := env{home: t.TempDir(), volume: t.TempDir()}
+	if _, err := findRsync(e); err != nil {
+		t.Skip("GNU rsync not available:", err)
+	}
+	backedUp := filepath.Join(e.backupHome(), "Pictures", "Photos Library.photoslibrary")
+	makeLibrary(t, backedUp, 5, "originals/O/old.jpg")
+	os.WriteFile(filepath.Join(e.backupHome(), "Pictures", "holiday.jpg"), []byte("x"), 0o644)
+	current := filepath.Join(e.home, "Pictures", "Photos Library.photoslibrary")
+	makeLibrary(t, current, 2, "originals/A/a.jpg")
+	if err := restorePaths(e, e.home, []string{"Pictures"}, keepNewer, false, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(current, "originals/O/old.jpg")); err == nil {
+		t.Fatal("the backed-up library was copied into the existing one")
+	}
+	if n, _ := libraryItems(current); n != 2 {
+		t.Fatalf("existing library changed: %d items", n)
+	}
+	if _, err := os.Stat(filepath.Join(e.home, "Pictures", "holiday.jpg")); err != nil {
+		t.Fatal("the rest of Pictures was not restored")
+	}
+}
