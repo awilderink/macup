@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -37,7 +39,34 @@ func runAttached(name string, args ...string) error {
 	return cmd.Run()
 }
 
-func nixArgs(args ...string) []string { return append(append([]string{}, nixFlags...), args...) }
+func nixArgs(args ...string) []string { return slices.Concat(nixFlags, args) }
+
+func nixVersion(nix string) string {
+	out, err := exec.Command(nix, "--version").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return firstLine(out)
+}
+
+func flakeHost(e env, nix string) (string, error) {
+	out, err := exec.Command(nix, nixArgs("eval", "--json", e.nixDir()+"#darwinConfigurations", "--apply", "builtins.attrNames")...).Output()
+	if err != nil {
+		return "", fmt.Errorf("cannot read darwinConfigurations from %s: %w", e.nixDir(), err)
+	}
+	var names []string
+	if err := json.Unmarshal(out, &names); err != nil {
+		return "", err
+	}
+	if len(names) == 1 {
+		return names[0], nil
+	}
+	local, _ := exec.Command("scutil", "--get", "LocalHostName").Output()
+	if host := strings.TrimSpace(string(local)); slices.Contains(names, host) {
+		return host, nil
+	}
+	return "", fmt.Errorf("flake.nix defines %s and none matches this Mac's name; keep one or rename this Mac", strings.Join(names, ", "))
+}
 
 func cmdApply(e env, args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
@@ -71,15 +100,17 @@ func runApply(e env, update, check bool) error {
 			return errors.New("Lix was installed but is not on PATH yet — open a new terminal and run `macup apply` again")
 		}
 	}
-	if out, err := exec.Command(nix, "--version").Output(); err == nil {
-		ok("%s", firstLine(out))
-	}
+	ok("%s", nixVersion(nix))
 
 	step("Configuration")
 	if err := ensureNixConfig(e); err != nil {
 		return err
 	}
-	ok("%s", e.nixDir())
+	host, err := flakeHost(e, nix)
+	if err != nil {
+		return err
+	}
+	ok("%s#%s", e.nixDir(), host)
 
 	if update {
 		if err := ensureLockOwned(e); err != nil {
@@ -93,7 +124,7 @@ func runApply(e env, update, check bool) error {
 
 	if check {
 		step("Building (check only, nothing is changed)")
-		if err := runAttached(nix, nixArgs("build", "--no-link", e.nixDir()+"#darwinConfigurations."+e.host+".system")...); err != nil {
+		if err := runAttached(nix, nixArgs("build", "--no-link", e.nixDir()+"#darwinConfigurations."+host+".system")...); err != nil {
 			return fmt.Errorf("the configuration does not build: %w", err)
 		}
 		ok("configuration builds")
@@ -101,7 +132,7 @@ func runApply(e env, update, check bool) error {
 	}
 
 	step("Applying system configuration (sudo may ask for your password)")
-	rebuild := append([]string{"-H", nix}, nixArgs("run", "--inputs-from", e.nixDir(), "nix-darwin#darwin-rebuild", "--", "switch", "--flake", e.nixDir()+"#"+e.host)...)
+	rebuild := append([]string{"-H", nix}, nixArgs("run", "--inputs-from", e.nixDir(), "nix-darwin#darwin-rebuild", "--", "switch", "--flake", e.nixDir()+"#"+host)...)
 	if err := runAttached("sudo", rebuild...); err != nil {
 		return fmt.Errorf("applying failed: %w", err)
 	}
@@ -123,10 +154,10 @@ func runApply(e env, update, check bool) error {
 }
 
 func ensureNixConfig(e env) error {
-	if _, err := os.Stat(filepath.Join(e.nixDir(), "flake.nix")); err == nil {
+	if e.hasNixConfig() {
 		return nil
 	}
-	if _, err := os.Stat(filepath.Join(e.driveNixDir(), "flake.nix")); err != nil {
+	if !hasFlake(e.driveNixDir()) {
 		return fmt.Errorf("no config at %s and none on the backup drive (%s) — connect the drive", e.nixDir(), e.driveNixDir())
 	}
 	note("copying the config from the backup drive")
@@ -164,12 +195,12 @@ func ensureLockOwned(e env) error {
 	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) == os.Getuid() {
 		return nil
 	}
-	note("flake.lock is owned by root; giving it back to %s", e.user)
+	note("flake.lock is owned by root; giving it back to %s", e.user())
 	return runAttached("sudo", "chown", fmt.Sprint(os.Getuid()), lock)
 }
 
 func syncNixConfigToDrive(e env, rsyncBin string) error {
-	if _, err := os.Stat(filepath.Join(e.nixDir(), "flake.nix")); err != nil {
+	if !e.hasNixConfig() {
 		return nil
 	}
 	if err := os.MkdirAll(e.driveNixDir(), 0o755); err != nil {
@@ -182,9 +213,9 @@ func syncNixConfigToDrive(e env, rsyncBin string) error {
 	return nil
 }
 
-func nixConfigInSync(e env) (bool, error) {
-	var differs bool
-	err := filepath.WalkDir(e.nixDir(), func(p string, d fs.DirEntry, err error) error {
+func nixConfigInSync(e env) bool {
+	same := true
+	filepath.WalkDir(e.nixDir(), func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -192,29 +223,24 @@ func nixConfigInSync(e env) (bool, error) {
 		a, err1 := os.ReadFile(p)
 		b, err2 := os.ReadFile(filepath.Join(e.driveNixDir(), rel))
 		if err1 != nil || err2 != nil || !bytes.Equal(a, b) {
-			differs = true
+			same = false
+			return fs.SkipAll
 		}
 		return nil
 	})
-	return !differs, err
+	return same
 }
 
 func offerShellRestore(e env) error {
 	if _, err := os.Stat(filepath.Join(e.home, ".oh-my-zsh")); err == nil {
 		return nil
 	}
-	src := e.backupHome()
-	var paths []string
-	for _, p := range presets[0].paths {
-		if _, err := os.Lstat(filepath.Join(src, p)); err == nil {
-			paths = append(paths, p)
-		}
-	}
+	paths := existingPaths(e.backupHome(), shellPreset.paths)
 	if len(paths) == 0 {
 		return nil
 	}
 	if !interactive() {
-		note("restore your shell config with: macup restore --path .zshrc --path .oh-my-zsh")
+		note("restore your shell config with: macup restore --path %s", strings.Join(paths, " --path "))
 		return nil
 	}
 	yes, err := confirm("Restore your shell config from the backup?", strings.Join(paths, ", "), true)
@@ -225,7 +251,7 @@ func offerShellRestore(e env) error {
 	if err != nil {
 		return err
 	}
-	return runRestore(e, bin, src, e.home, paths, keepNewer)
+	return runRestore(e, bin, e.home, paths, keepNewer)
 }
 
 func cmdEdit(e env, args []string) error {
@@ -253,10 +279,7 @@ func cmdEdit(e env, args []string) error {
 	if err := ensureNixConfig(e); err != nil {
 		return err
 	}
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
+	editor := envOr("VISUAL", os.Getenv("EDITOR"))
 	if editor == "" {
 		editor = "vi"
 		if _, err := exec.LookPath("code"); err == nil {
@@ -282,161 +305,3 @@ func offerApply(e env) error {
 	return runApply(e, false, false)
 }
 
-func cmdAdd(e env, args []string) error    { return changePackages(e, args, true) }
-func cmdRemove(e env, args []string) error { return changePackages(e, args, false) }
-
-func changePackages(e env, args []string, add bool) error {
-	verb, past := "remove", "Removed"
-	if add {
-		verb, past = "add", "Added"
-	}
-	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
-	app := fs.Bool("app", false, "a Mac app from Homebrew (cask) instead of a command-line tool")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	names := fs.Args()
-	if len(names) == 0 {
-		return fmt.Errorf("usage: macup %s [--app] <name>...", verb)
-	}
-	if err := ensureNixConfig(e); err != nil {
-		return err
-	}
-	file := filepath.Join(e.nixDir(), "home.nix")
-	edit := editPackages
-	if *app {
-		file = filepath.Join(e.nixDir(), "flake.nix")
-		edit = editCasks
-	}
-	if add {
-		for _, n := range names {
-			if err := validatePackage(e, n, *app); err != nil {
-				return err
-			}
-		}
-	}
-	src, err := os.ReadFile(file)
-	if err != nil {
-		return err
-	}
-	out, changed, err := edit(string(src), names, add)
-	if err != nil {
-		return err
-	}
-	if len(changed) == 0 {
-		ok("nothing to change")
-		return nil
-	}
-	if err := os.WriteFile(file, []byte(out), 0o644); err != nil {
-		return err
-	}
-	ok("%s %s in %s", past, strings.Join(changed, ", "), filepath.Base(file))
-	return offerApply(e)
-}
-
-func validatePackage(e env, name string, app bool) error {
-	if app {
-		brew, err := exec.LookPath("brew")
-		if err != nil {
-			return nil
-		}
-		if exec.Command(brew, "info", "--cask", name).Run() != nil {
-			return fmt.Errorf("Homebrew has no app called %q (try `brew search %s`)", name, name)
-		}
-		return nil
-	}
-	nix := findNix()
-	if nix == "" {
-		return errors.New("Nix is not installed yet — run `macup apply` first")
-	}
-	out, err := exec.Command(nix, nixArgs("eval", "--raw", "--inputs-from", e.nixDir(), "nixpkgs#"+name+".name")...).Output()
-	if err != nil {
-		return fmt.Errorf("nixpkgs has no package called %q (search at https://search.nixos.org/packages?query=%s)", name, name)
-	}
-	note("found %s", strings.TrimSpace(string(out)))
-	return nil
-}
-
-func cmdStatus(e env, _ []string) error {
-	row := func(label, value string) { fmt.Printf("%s %s\n", styleStep.Render(fmt.Sprintf("%-14s", label)), value) }
-	fmt.Println(styleTitle.Render("macup status"))
-	if err := checkMounted(e.volume); err != nil {
-		row("Backup drive", styleWarn.Render("not connected"))
-	} else {
-		v := e.volume + " · connected"
-		if free, total, err := freeSpace(e.volume); err == nil && total > 0 {
-			v += fmt.Sprintf(" · %s free of %s", humanBytes(int64(free)), humanBytes(int64(total)))
-			if free*10 < total {
-				v = styleWarn.Render(v + " · nearly full")
-			}
-		}
-		row("Backup drive", v)
-	}
-	row("Last backup", lastBackup(e))
-	row("Photos", lastPhotoBackup(e))
-	switch granted, known := hasFullDiskAccess(e.home); {
-	case !known:
-		row("Disk access", "unknown")
-	case granted:
-		row("Disk access", terminalName()+" has Full Disk Access")
-	default:
-		row("Disk access", styleWarn.Render(terminalName()+" lacks Full Disk Access — backups will miss protected folders"))
-	}
-	if nix := findNix(); nix != "" {
-		out, _ := exec.Command(nix, "--version").Output()
-		row("Nix", firstLine(out))
-	} else {
-		row("Nix", styleWarn.Render("not installed — run macup apply"))
-	}
-	if gen, err := os.Readlink("/run/current-system"); err == nil {
-		row("System", filepath.Base(gen))
-	} else {
-		row("System", styleWarn.Render("nix-darwin not applied yet"))
-	}
-	if _, err := os.Stat(filepath.Join(e.nixDir(), "flake.nix")); err != nil {
-		row("Config", styleWarn.Render("missing — macup apply copies it from the drive"))
-	} else {
-		v := e.nixDir()
-		if checkMounted(e.volume) == nil {
-			if same, _ := nixConfigInSync(e); same {
-				v += " · same as drive copy"
-			} else {
-				v += styleWarn.Render(" · differs from drive copy (saved on next apply or backup)")
-			}
-		}
-		row("Config", v)
-	}
-	return nil
-}
-
-func lastRealBackupLog(e env) (string, bool) {
-	logs, _ := filepath.Glob(filepath.Join(e.logDir(), "backup-*.log"))
-	for i := len(logs) - 1; i >= 0; i-- {
-		data, err := os.ReadFile(logs[i])
-		if err != nil {
-			continue
-		}
-		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		last := lines[len(lines)-1]
-		if strings.Contains(lines[0], "--dry-run") || !strings.Contains(last, ": finished") {
-			continue
-		}
-		return last, true
-	}
-	return "", false
-}
-
-func lastBackup(e env) string {
-	if last, found := lastRealBackupLog(e); found {
-		return last
-	}
-	if info, err := os.Stat(e.backupHome()); err == nil {
-		return "unknown (backup folder last changed " + info.ModTime().Format("2006-01-02 15:04") + ")"
-	}
-	return "none"
-}
-
-func firstLine(b []byte) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(string(b)), "\n")
-	return line
-}

@@ -18,8 +18,9 @@ const usage = `macup — back up, restore and set up this Mac
 
 Usage:
   macup                      interactive menu
-  macup backup [-n] [--mirror] [--no-photos | --photos-only] [--exclude PATTERN]
-                             copy your home folder and Photos library to the backup drive
+  macup backup [-n] [--mirror] [--no-photos | --photos-only] [--exclude PATTERN] [--yes]
+                             copy your home folder and Photos library to the backup drive;
+                             --yes continues past the safety checks
   macup restore [-n] [--path P]... [--mode update|missing|overwrite] [--target DIR] [--yes]
                              pick files and folders to bring back (no --path opens the picker)
   macup restore --photos     copy the backed-up Photos library back into ~/Pictures
@@ -44,18 +45,21 @@ func main() {
 			err = dispatch(e, os.Args[1], os.Args[2:])
 		}
 	}
+	os.Exit(report(err))
+}
+
+func report(err error) int {
 	switch {
-	case err == nil:
+	case err == nil, errors.Is(err, flag.ErrHelp):
+		return 0
 	case errors.Is(err, errCancelled), errors.Is(err, huh.ErrUserAborted):
 		fmt.Println(styleDim.Render("cancelled"))
-		os.Exit(130)
-	case errors.Is(err, flag.ErrHelp):
+		return 130
 	case errors.Is(err, errSilent):
-		os.Exit(1)
-	default:
-		fmt.Fprintln(os.Stderr, styleError.Render("✗ ")+err.Error())
-		os.Exit(1)
+		return 1
 	}
+	fmt.Fprintln(os.Stderr, styleError.Render("✗ ")+err.Error())
+	return 1
 }
 
 func dispatch(e env, cmd string, args []string) error {
@@ -103,14 +107,7 @@ func menu(e env) error {
 		if err != nil || choice == "quit" {
 			return nil
 		}
-		err = runMenuChoice(e, choice)
-		switch {
-		case err == nil, errors.Is(err, errSilent):
-		case errors.Is(err, errCancelled), errors.Is(err, huh.ErrUserAborted):
-			fmt.Println(styleDim.Render("cancelled"))
-		default:
-			fmt.Fprintln(os.Stderr, styleError.Render("✗ ")+err.Error())
-		}
+		report(runMenuChoice(e, choice))
 	}
 }
 
@@ -147,9 +144,5 @@ func addMenu(e env) error {
 	if name == "" {
 		return errCancelled
 	}
-	args := []string{name}
-	if kind == "app" {
-		args = []string{"--app", name}
-	}
-	return cmdAdd(e, args)
+	return changePackages(e, []string{name}, kind == "app", true)
 }

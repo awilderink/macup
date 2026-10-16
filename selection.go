@@ -1,10 +1,11 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -22,11 +23,15 @@ type selection struct {
 }
 
 func newSelection(root string) *selection {
-	return &selection{paths: map[string]bool{}, list: dirLister(root)}
+	return &selection{paths: map[string]bool{}, list: cachedLister(root)}
 }
 
-func dirLister(root string) func(string) ([]string, error) {
+func cachedLister(root string) func(string) ([]string, error) {
+	cache := map[string][]string{}
 	return func(rel string) ([]string, error) {
+		if names, found := cache[rel]; found {
+			return names, nil
+		}
 		entries, err := os.ReadDir(filepath.Join(root, rel))
 		if err != nil {
 			return nil, err
@@ -35,8 +40,19 @@ func dirLister(root string) func(string) ([]string, error) {
 		for _, e := range entries {
 			names = append(names, joinRel(rel, e.Name()))
 		}
+		cache[rel] = names
 		return names, nil
 	}
+}
+
+func existingPaths(root string, rels []string) []string {
+	var found []string
+	for _, rel := range rels {
+		if _, err := os.Lstat(filepath.Join(root, rel)); err == nil {
+			found = append(found, rel)
+		}
+	}
+	return found
 }
 
 func joinRel(dir, name string) string {
@@ -146,11 +162,4 @@ func (s *selection) remove(rel string) error {
 
 func (s *selection) clear() { s.paths = map[string]bool{} }
 
-func (s *selection) sorted() []string {
-	out := make([]string, 0, len(s.paths))
-	for p := range s.paths {
-		out = append(out, p)
-	}
-	sort.Strings(out)
-	return out
-}
+func (s *selection) sorted() []string { return slices.Sorted(maps.Keys(s.paths)) }

@@ -41,7 +41,7 @@ The binary lives in the root of the backup drive (`/Volumes/Backup/macup`) so it
 
 - Quit the Photos app first; the backup refuses while it is open.
 - The database is copied as a consistent SQLite snapshot, then the rest of the library is synced around it. Photos' iCloud upload cache (`resources/cpl`) is left out.
-- The previous copy is kept aside as an APFS clone (almost no extra space) until the new copy passes an integrity check and has the same number of items; otherwise the previous copy is put back. An interrupted run is rolled back on the next one.
+- The update is built on a staging copy (an APFS clone of the previous backup, so almost no extra space) and only swapped in, atomically, once it passes an integrity check and has the same number of items. If anything fails, the existing backup is untouched; a staging copy left by an interrupted run is discarded on the next one.
 - If the library on this Mac has fewer items or original files than the backup — for example because "Optimize Mac Storage" left originals only in iCloud — it refuses unless you pass `--yes`.
 
 `macup restore --photos` (or the menu) copies the library back into `~/Pictures`, and never overwrites one that is already there.
@@ -70,4 +70,4 @@ Do not put SSH keys, Claude credentials, API keys or other secrets in the Nix co
 
 `./build.sh` runs the tests, builds to `~/.local/bin/macup` and, when the backup drive is connected, copies the binary to `/Volumes/Backup/macup`. It only needs Nix, which provides Go.
 
-For a different Mac or hostname, change `Arvins-MacBook-Pro` in `nix-darwin/flake.nix`, or set `MACUP_HOST`.
+`macup apply` uses the single `darwinConfigurations` entry in `flake.nix`; with several, it picks the one named after this Mac.

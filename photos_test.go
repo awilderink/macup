@@ -65,8 +65,8 @@ func TestPhotoBackupCopiesLibraryWithoutICloudCache(t *testing.T) {
 	if _, err := os.Stat(photosDB(l.dst) + "-wal"); err == nil {
 		t.Error("a stale WAL file was left next to the snapshot")
 	}
-	if _, err := os.Stat(l.previous()); err == nil {
-		t.Error("the previous copy was not cleaned up")
+	if _, err := os.Stat(l.staging()); err == nil {
+		t.Error("the staging copy was not cleaned up")
 	}
 }
 
@@ -92,50 +92,62 @@ func TestPhotoBackupUpdatesAnExistingCopy(t *testing.T) {
 }
 
 // A library that lost originals (for example after "Optimize Mac Storage"
-// moved them to iCloud) must not wipe them from the backup by default.
-func TestPhotoBackupRefusesWhenLibraryShrank(t *testing.T) {
+// moved them to iCloud) must not wipe them from the backup unnoticed.
+func TestShrunkLibraryIsGuarded(t *testing.T) {
 	e, l, bin := photoFixture(t)
 	if err := backupPhotoLibrary(e, backupOptions{}, bin, l); err != nil {
 		t.Fatal(err)
+	}
+	if g, err := l.shrinkGuard(); err != nil || g != nil {
+		t.Fatalf("an unchanged library was guarded: %v %v", g, err)
 	}
 	os.Remove(filepath.Join(l.src, "originals/B/b.mov"))
-	err := backupPhotoLibrary(e, backupOptions{}, bin, l)
-	if err == nil || !strings.Contains(err.Error(), "Optimize Mac Storage") {
-		t.Fatalf("err = %v, want a refusal", err)
-	}
-	if _, err := os.Stat(filepath.Join(l.dst, "originals/B/b.mov")); err != nil {
-		t.Fatal("the refused run still removed an original from the backup")
-	}
-	if err := backupPhotoLibrary(e, backupOptions{yes: true}, bin, l); err != nil {
-		t.Fatalf("--yes should allow it: %v", err)
+	g, err := l.shrinkGuard()
+	if err != nil || g == nil || !strings.Contains(g.problem, "Optimize Mac Storage") {
+		t.Fatalf("guard = %v, err = %v; want a warning about the smaller library", g, err)
 	}
 }
 
-func TestPhotoBackupRestoresLastGoodCopyAfterInterruption(t *testing.T) {
+// A run that died half-way leaves a staging copy behind; the next run must
+// discard it rather than build on a half-copied library.
+func TestStaleStagingCopyIsDiscarded(t *testing.T) {
 	e, l, bin := photoFixture(t)
 	if err := backupPhotoLibrary(e, backupOptions{}, bin, l); err != nil {
 		t.Fatal(err)
 	}
-	os.Rename(l.dst, l.previous())
-	os.MkdirAll(filepath.Join(l.dst, "originals"), 0o755)
-	if err := recoverInterruptedPhotoBackup(l); err != nil {
+	os.MkdirAll(filepath.Join(l.staging(), "originals", "junk"), 0o755)
+	os.WriteFile(filepath.Join(l.staging(), "originals", "junk", "half.jpg"), []byte("x"), 0o644)
+	if err := backupPhotoLibrary(e, backupOptions{}, bin, l); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(l.dst, "originals", "junk")); err == nil {
+		t.Fatal("leftovers from the stale staging copy ended up in the backup")
 	}
 	if n, err := libraryItems(l.dst); err != nil || n != 2 {
-		t.Fatalf("recovered copy items = %d, %v", n, err)
-	}
-	if _, err := os.Stat(l.previous()); err == nil {
-		t.Fatal("previous copy still present after recovery")
+		t.Fatalf("items = %d, %v", n, err)
 	}
 }
 
-func TestPhotoVerificationCatchesItemMismatch(t *testing.T) {
+// When the new copy fails verification the existing backup must stay as it
+// was: the work happens on a staging copy that is only swapped in at the end.
+func TestFailedBackupLeavesTheBackupUntouched(t *testing.T) {
 	e, l, bin := photoFixture(t)
 	if err := backupPhotoLibrary(e, backupOptions{}, bin, l); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyPhotoBackup(l, 5); err == nil {
-		t.Fatal("a copy with fewer items than the source passed verification")
+	if err := verifyPhotoBackup(l.dst, 5); err == nil {
+		t.Fatal("a copy with fewer items than expected passed verification")
+	}
+	makeLibrary(t, l.src, 3, "originals/C/c.jpg")
+	os.WriteFile(photosDB(l.src), []byte("not a database"), 0o644)
+	if err := backupPhotoLibrary(e, backupOptions{}, bin, l); err == nil {
+		t.Fatal("backing up an unreadable library succeeded")
+	}
+	if n, err := libraryItems(l.dst); err != nil || n != 2 {
+		t.Fatalf("existing backup changed: items = %d, %v", n, err)
+	}
+	if _, err := os.Stat(l.staging()); err == nil {
+		t.Fatal("the failed staging copy was left behind")
 	}
 }
 

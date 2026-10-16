@@ -6,7 +6,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -18,8 +17,6 @@ var protectedDirs = []string{
 	"Library/Messages",
 	"Library/Safari",
 }
-
-const fullDiskAccessPane = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
 
 func hasFullDiskAccess(home string) (granted, known bool) {
 	for _, rel := range protectedDirs {
@@ -42,38 +39,17 @@ func hasFullDiskAccess(home string) (granted, known bool) {
 	return false, false
 }
 
-func terminalName() string {
-	if t := os.Getenv("TERM_PROGRAM"); t != "" {
-		return t
-	}
-	return "your terminal app"
-}
+func terminalName() string { return envOr("TERM_PROGRAM", "your terminal app") }
 
-func checkFullDiskAccess(e env, what string, yes bool) error {
+func fullDiskAccessGuard(e env, what string) *guard {
 	if granted, known := hasFullDiskAccess(e.home); granted || !known {
 		return nil
 	}
-	msg := fmt.Sprintf("%s does not have Full Disk Access, so macOS blocks parts of ~/Library (Contacts, Messages, Mail, Safari, call history) and %s would silently skip them. "+
-		"Turn it on in System Settings → Privacy & Security → Full Disk Access, then quit and reopen %s.", terminalName(), what, terminalName())
-	if yes {
-		warn("%s", msg)
-		return nil
+	return &guard{
+		problem: fmt.Sprintf("%s does not have Full Disk Access, so macOS blocks parts of ~/Library (Contacts, Messages, Mail, Safari, call history) and the %s would skip them. "+
+			"Turn it on in System Settings → Privacy & Security → Full Disk Access, then quit and reopen %s.", terminalName(), what, terminalName()),
+		question: "Continue without Full Disk Access?",
+		fixTitle: "Open that settings page now?",
+		fix:      openSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"),
 	}
-	if !interactive() {
-		return errors.New(msg + " Add --yes to continue without it.")
-	}
-	warn("%s", msg)
-	open, err := confirm("Open that settings page now?", "", true)
-	if err != nil {
-		return err
-	}
-	if open {
-		exec.Command("open", fullDiskAccessPane).Run()
-		return errCancelled
-	}
-	cont, err := confirm("Continue without Full Disk Access?", "Protected folders will be missing from the "+what+".", false)
-	if err != nil || !cont {
-		return errCancelled
-	}
-	return nil
 }

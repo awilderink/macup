@@ -65,3 +65,5 @@ func processAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
+
+func nearlyFull(free, total uint64) bool { return total > 0 && free*10 < total }

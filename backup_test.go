@@ -14,7 +14,7 @@ import (
 // backup drive cannot hold the current one next to the old one) fails here.
 func TestEmbeddedRulesSelectTheRightFiles(t *testing.T) {
 	home := t.TempDir()
-	e := env{home: home, user: filepath.Base(home)}
+	e := env{home: home}
 	bin, err := findRsync(e)
 	if err != nil {
 		t.Skip("GNU rsync not available:", err)
@@ -39,7 +39,7 @@ func TestEmbeddedRulesSelectTheRightFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Remove(rules)
-	out, err := exec.Command(bin, "-aX", "-n", "--out-format=%n", unreadableXattrs, "--filter=merge "+rules, home+"/", t.TempDir()+"/").Output()
+	out, err := exec.Command(bin, rsyncArgs("-n", "--out-format=%n", "--filter=merge "+rules, home+"/", t.TempDir()+"/")...).Output()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,40 +63,42 @@ func TestEmbeddedRulesSelectTheRightFiles(t *testing.T) {
 }
 
 // A freshly installed Mac must not silently overwrite an existing backup with
-// default settings: without a previous successful backup it needs --yes.
-func TestFirstBackupFromThisMacNeedsConfirmation(t *testing.T) {
+// default settings: until one real backup has finished, it asks first.
+func TestFirstBackupFromThisMacIsGuarded(t *testing.T) {
 	e := env{home: t.TempDir(), volume: t.TempDir()}
+	if firstBackupGuard(e) != nil {
+		t.Fatal("an empty backup drive should not need confirmation")
+	}
 	os.MkdirAll(filepath.Join(e.backupHome(), "Documents"), 0o755)
-	if err := confirmFirstBackup(e, backupOptions{}); err == nil {
-		t.Fatal("first backup over an existing backup was allowed without confirmation")
-	}
-	if err := confirmFirstBackup(e, backupOptions{dryRun: true}); err != nil {
-		t.Fatalf("a dry run should not need confirmation: %v", err)
-	}
-	if err := confirmFirstBackup(e, backupOptions{yes: true}); err != nil {
-		t.Fatalf("--yes should confirm: %v", err)
+	if firstBackupGuard(e) == nil {
+		t.Fatal("first backup over an existing backup was not guarded")
 	}
 	os.MkdirAll(e.logDir(), 0o755)
-	os.WriteFile(filepath.Join(e.logDir(), "backup-20261001-120000.log"),
-		[]byte("rsync -ahXN src dst\n2026-10-01T12:00:00+01:00: finished after 5m0s\n"), 0o644)
-	if err := confirmFirstBackup(e, backupOptions{}); err != nil {
-		t.Fatalf("a Mac with a previous successful backup should not be asked again: %v", err)
+	os.WriteFile(e.lastBackupFile(), []byte("2026-10-01 12:00 · finished\n"), 0o644)
+	if firstBackupGuard(e) != nil {
+		t.Fatal("a Mac with a previous successful backup should not be asked again")
+	}
+	if got := lastBackup(e); got != "2026-10-01 12:00 · finished" {
+		t.Fatalf("lastBackup = %q", got)
 	}
 }
 
-func TestFailedOrDryRunBackupsDoNotCountAsBackedUp(t *testing.T) {
-	e := env{home: t.TempDir()}
-	os.MkdirAll(e.logDir(), 0o755)
-	os.WriteFile(filepath.Join(e.logDir(), "backup-20261001-120000.log"),
-		[]byte("rsync -ahXN --dry-run src dst\n2026-10-01T12:00:00+01:00: finished after 1s\n"), 0o644)
-	os.WriteFile(filepath.Join(e.logDir(), "backup-20261002-120000.log"),
-		[]byte("rsync -ahXN src dst\n2026-10-02T12:00:00+01:00: cancelled after 1s\n"), 0o644)
-	if hasBackedUpBefore(e) {
-		t.Fatal("dry runs and cancelled runs were counted as real backups")
+// Without a terminal nobody can answer, so a guard must stop the run unless
+// --yes (or a dry run) says to continue.
+func TestGuardsStopNonInteractiveRunsUnlessYes(t *testing.T) {
+	g := &guard{problem: "something is off", question: "continue?"}
+	if err := resolveGuards([]check{precomputed(g)}, false); err == nil {
+		t.Fatal("a guard did not stop a non-interactive run")
+	}
+	if err := resolveGuards([]check{precomputed(g)}, true); err != nil {
+		t.Fatalf("--yes should continue: %v", err)
+	}
+	if err := resolveGuards([]check{precomputed(nil)}, false); err != nil {
+		t.Fatalf("no problem should mean no stop: %v", err)
 	}
 }
 
-func TestMirrorPreviewCountsWhatWouldBeDeleted(t *testing.T) {
+func TestMirrorGuardCountsWhatWouldBeDeleted(t *testing.T) {
 	e := env{home: t.TempDir(), volume: t.TempDir()}
 	bin, err := findRsync(e)
 	if err != nil {
@@ -110,12 +112,12 @@ func TestMirrorPreviewCountsWhatWouldBeDeleted(t *testing.T) {
 	}
 	rules, _ := writeRulesFile()
 	defer os.Remove(rules)
-	d, err := previewDeletions(e, backupOptions{mirror: true}, bin, rules)
+	g, err := mirrorGuard(e, backupOptions{mirror: true}, bin, rules)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.count != 3 {
-		t.Fatalf("count = %d (%v), want gone.txt, old/ and old/a.txt", d.count, d.samples)
+	if g == nil || !strings.Contains(g.problem, "3 files and folders") {
+		t.Fatalf("guard = %+v, want gone.txt, old/ and old/a.txt counted", g)
 	}
 	if _, err := os.Stat(filepath.Join(e.backupHome(), "gone.txt")); err != nil {
 		t.Fatal("the preview deleted files")

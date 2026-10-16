@@ -19,7 +19,6 @@ import (
 var (
 	accent      = lipgloss.AdaptiveColor{Light: "#5A3FC0", Dark: "#B4A0FF"}
 	styleTitle  = lipgloss.NewStyle().Bold(true).Foreground(accent)
-	styleStep   = lipgloss.NewStyle().Bold(true).Foreground(accent)
 	styleDim    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#777777", Dark: "#8A8A8A"})
 	styleOK     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#1F7A3A", Dark: "#6BD68B"})
 	styleWarn   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#9A6200", Dark: "#F2C14E"})
@@ -31,17 +30,20 @@ func interactive() bool {
 	return isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
 }
 
-func step(format string, a ...any) { fmt.Println(styleStep.Render("==> ") + fmt.Sprintf(format, a...)) }
+func step(format string, a ...any) { fmt.Println(styleTitle.Render("==> ") + fmt.Sprintf(format, a...)) }
 func ok(format string, a ...any)   { fmt.Println(styleOK.Render("✓ ") + fmt.Sprintf(format, a...)) }
 func warn(format string, a ...any) { fmt.Println(styleWarn.Render("! ") + fmt.Sprintf(format, a...)) }
 func note(format string, a ...any) { fmt.Println(styleDim.Render("  " + fmt.Sprintf(format, a...))) }
 
-func withSpinner(title string, action func()) error {
+func withSpinner(title string, action func() error) error {
 	if !interactive() {
-		action()
-		return nil
+		return action()
 	}
-	return hspinner.New().Title(" " + title).Action(action).Run()
+	var err error
+	if serr := hspinner.New().Title(" " + title).Action(func() { err = action() }).Run(); serr != nil {
+		return serr
+	}
+	return err
 }
 
 func confirm(title, description string, def bool) (bool, error) {
@@ -51,6 +53,17 @@ func confirm(title, description string, def bool) (bool, error) {
 	answer := def
 	err := huh.NewConfirm().Title(title).Description(description).Value(&answer).Run()
 	return answer, err
+}
+
+func confirmOrCancel(title, description string, def bool) error {
+	yes, err := confirm(title, description, def)
+	if err != nil {
+		return err
+	}
+	if !yes {
+		return errCancelled
+	}
+	return nil
 }
 
 type progressMsg rsyncProgress
@@ -65,7 +78,6 @@ type jobModel struct {
 	bar        progress.Model
 	spin       spinner.Model
 	prog       rsyncProgress
-	seen       bool
 	warnings   []string
 	warnCount  int
 	cancel     context.CancelFunc
@@ -87,7 +99,6 @@ func (m jobModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bar.Width = min(60, max(20, msg.Width-30))
 	case progressMsg:
 		m.prog = rsyncProgress(msg)
-		m.seen = true
 	case lineMsg:
 		m.warnCount++
 		m.warnings = append(m.warnings, string(msg))
@@ -111,7 +122,7 @@ func (m jobModel) View() string {
 	}
 	var b strings.Builder
 	b.WriteString(m.spin.View() + " " + styleTitle.Render(m.title) + "\n\n")
-	if m.seen {
+	if m.prog.transferred != "" {
 		b.WriteString("  " + m.bar.ViewAs(float64(m.prog.percent)/100) + "\n")
 		info := fmt.Sprintf("  %s copied · %s", m.prog.transferred, m.prog.rate)
 		if m.prog.files != "" {
@@ -155,7 +166,13 @@ func runJob(title string, job rsyncJob) (rsyncResult, error) {
 	m := jobModel{title: title, bar: progress.New(progress.WithDefaultGradient(), progress.WithWidth(50)), spin: sp, cancel: cancel, start: time.Now()}
 	p := tea.NewProgram(m)
 	go func() {
-		res, err := job.run(ctx, func(pr rsyncProgress) { p.Send(progressMsg(pr)) }, func(l string) { p.Send(lineMsg(l)) })
+		last := time.Time{}
+		res, err := job.run(ctx, func(pr rsyncProgress) {
+			if time.Since(last) >= 100*time.Millisecond {
+				last = time.Now()
+				p.Send(progressMsg(pr))
+			}
+		}, func(l string) { p.Send(lineMsg(l)) })
 		p.Send(jobDoneMsg{res: res, err: err})
 	}()
 	final, err := p.Run()
@@ -179,10 +196,11 @@ func reportResult(what string, res rsyncResult) error {
 	default:
 		fmt.Println(styleError.Render("✗ ") + line)
 	}
-	if res.logPath != "" {
-		note("log: %s", res.logPath)
-	}
-	if !res.ok() {
+	note("log: %s", res.logPath)
+	switch {
+	case res.exitCode == 20:
+		return errCancelled
+	case !res.ok():
 		return errSilent
 	}
 	return nil

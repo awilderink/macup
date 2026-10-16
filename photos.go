@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -20,16 +20,18 @@ type photoLibrary struct {
 	dst  string
 }
 
-func (l photoLibrary) previous() string {
-	return filepath.Join(filepath.Dir(l.dst), "."+l.name+".previous")
+func (l photoLibrary) staging() string {
+	return filepath.Join(filepath.Dir(l.dst), "."+l.name+".staging")
 }
 
-func (e env) photosDir() string { return filepath.Join(e.volume, "photos") }
+func librariesIn(dir string) []string {
+	paths, _ := filepath.Glob(filepath.Join(dir, "*.photoslibrary"))
+	return paths
+}
 
 func photoLibraries(e env) []photoLibrary {
-	paths, _ := filepath.Glob(filepath.Join(e.home, "Pictures", "*.photoslibrary"))
-	libs := make([]photoLibrary, 0, len(paths))
-	for _, p := range paths {
+	var libs []photoLibrary
+	for _, p := range librariesIn(filepath.Join(e.home, "Pictures")) {
 		name := filepath.Base(p)
 		libs = append(libs, photoLibrary{name: name, src: p, dst: filepath.Join(e.photosDir(), name)})
 	}
@@ -67,146 +69,114 @@ func countFiles(dir string) int {
 	return n
 }
 
-func checkLibraryNotShrunk(l photoLibrary, srcItems int) error {
+func (l photoLibrary) shrinkGuard() (*guard, error) {
 	if _, err := os.Stat(photosDB(l.dst)); err != nil {
-		return nil
+		return nil, nil
+	}
+	srcItems, err := libraryItems(l.src)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %w", l.name, err)
 	}
 	dstItems, err := libraryItems(l.dst)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	srcOriginals := countFiles(filepath.Join(l.src, "originals"))
-	dstOriginals := countFiles(filepath.Join(l.dst, "originals"))
+	var srcOriginals, dstOriginals int
+	var wg sync.WaitGroup
+	wg.Go(func() { srcOriginals = countFiles(filepath.Join(l.src, "originals")) })
+	wg.Go(func() { dstOriginals = countFiles(filepath.Join(l.dst, "originals")) })
+	wg.Wait()
 	if srcItems >= dstItems && srcOriginals >= dstOriginals {
-		return nil
+		return nil, nil
 	}
-	return fmt.Errorf("%s on this Mac has %d items and %d original files, the backup has %d items and %d original files. "+
-		"Backing up would remove the difference from the backup. If Photos → Settings → iCloud is set to \"Optimize Mac Storage\", "+
-		"originals live only in iCloud; switch to \"Download Originals\" first. Add --yes to back up anyway",
-		l.name, srcItems, srcOriginals, dstItems, dstOriginals)
+	return &guard{
+		problem: fmt.Sprintf("%s on this Mac has %d items and %d original files, the backup has %d items and %d original files. "+
+			"Backing up would remove the difference from the backup. If Photos → Settings → iCloud is set to \"Optimize Mac Storage\", "+
+			"originals live only in iCloud; switch to \"Download Originals\" first.", l.name, srcItems, srcOriginals, dstItems, dstOriginals),
+		question: "Back up the smaller library anyway?",
+	}, nil
 }
 
-func photoArgs(l photoLibrary, extra ...string) []string {
-	args := []string{"-ahXN", "--delete", unreadableXattrs,
+func photoArgs(src, dst string) []string {
+	return rsyncArgs("--delete",
 		"--filter=- /database/Photos.sqlite*",
 		"--filter=H /resources/cpl/",
-	}
-	args = append(args, extra...)
-	return append(args, l.src+"/", l.dst+"/")
-}
-
-func recoverInterruptedPhotoBackup(l photoLibrary) error {
-	if _, err := os.Stat(l.previous()); err != nil {
-		return nil
-	}
-	warn("a previous Photos backup of %s was interrupted; putting the last good copy back", l.name)
-	if err := os.RemoveAll(l.dst); err != nil {
-		return err
-	}
-	return os.Rename(l.previous(), l.dst)
-}
-
-func backupPhotos(e env, o backupOptions, bin string) error {
-	libs := photoLibraries(e)
-	if len(libs) == 0 {
-		return nil
-	}
-	if photosAppRunning() && !o.dryRun {
-		return errors.New("quit the Photos app first; its library is a live database that cannot be copied safely while it is open")
-	}
-	for _, l := range libs {
-		if err := backupPhotoLibrary(e, o, bin, l); err != nil {
-			return err
-		}
-	}
-	return nil
+		src+"/", dst+"/")
 }
 
 func backupPhotoLibrary(e env, o backupOptions, bin string, l photoLibrary) error {
-	if err := recoverInterruptedPhotoBackup(l); err != nil {
-		return err
-	}
 	srcItems, err := libraryItems(l.src)
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", l.name, err)
 	}
-	if !o.yes {
-		if err := checkLibraryNotShrunk(l, srcItems); err != nil {
-			return err
-		}
-	}
 	if o.dryRun {
 		return previewPhotoBackup(bin, l, srcItems)
+	}
+	staging := l.staging()
+	if err := os.RemoveAll(staging); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(e.photosDir(), 0o755); err != nil {
 		return err
 	}
-	hadPrevious := false
-	if _, err := os.Stat(l.dst); err == nil {
-		if err := unix.Clonefile(l.dst, l.previous(), unix.CLONE_NOFOLLOW); err != nil {
-			return fmt.Errorf("could not keep the previous Photos backup aside: %w", err)
+	_, statErr := os.Stat(l.dst)
+	replacing := statErr == nil
+	if replacing {
+		if err := unix.Clonefile(l.dst, staging, unix.CLONE_NOFOLLOW); err != nil {
+			return fmt.Errorf("could not stage the Photos backup: %w", err)
 		}
-		hadPrevious = true
 	}
-	rollback := func(cause error) error {
-		if !hadPrevious {
-			return fmt.Errorf("%w; the incomplete copy at %s is not usable", cause, l.dst)
-		}
-		if err := os.RemoveAll(l.dst); err == nil {
-			os.Rename(l.previous(), l.dst)
-		}
-		return fmt.Errorf("%w; the previous Photos backup was kept", cause)
+	if err := stagePhotoLibrary(e, bin, l, staging, srcItems); err != nil {
+		os.RemoveAll(staging)
+		return err
 	}
+	if !replacing {
+		return os.Rename(staging, l.dst)
+	}
+	if err := unix.RenamexNp(staging, l.dst, unix.RENAME_SWAP); err != nil {
+		os.RemoveAll(staging)
+		return fmt.Errorf("could not swap in the new Photos backup: %w", err)
+	}
+	return os.RemoveAll(staging)
+}
 
-	if err := os.MkdirAll(filepath.Join(l.dst, "database"), 0o755); err != nil {
-		return rollback(err)
+func stagePhotoLibrary(e env, bin string, l photoLibrary, staging string, srcItems int) error {
+	db := photosDB(staging)
+	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
+		return err
 	}
-	snapshot := photosDB(l.dst) + ".macup-new"
-	os.Remove(snapshot)
-	if err := withSpinner("Taking a consistent snapshot of the Photos database…", func() {
-		_, err = sqliteQuery(photosDB(l.src), "vacuum into '"+strings.ReplaceAll(snapshot, "'", "''")+"';")
+	for _, f := range []string{db, db + "-wal", db + "-shm"} {
+		os.Remove(f)
+	}
+	if err := withSpinner("Taking a consistent snapshot of the Photos database…", func() error {
+		_, err := sqliteQuery(photosDB(l.src), "vacuum into '"+strings.ReplaceAll(db, "'", "''")+"';")
+		return err
 	}); err != nil {
-		return rollback(err)
+		return err
 	}
+	res, err := runJob("Backing up "+l.name+" → "+l.dst, rsyncJob{bin: bin, args: photoArgs(l.src, staging), logPath: logPath(e, "photos"), strict: true})
 	if err != nil {
-		return rollback(err)
+		return err
 	}
-	res, err := runJob("Backing up "+l.name+" → "+l.dst, rsyncJob{bin: bin, args: photoArgs(l, "--info=progress2"), logPath: logPath(e, "photos")})
-	if err != nil {
-		return rollback(err)
+	if err := reportResult("Photos copy", res); err != nil {
+		return err
 	}
-	if res.exitCode != 0 && res.exitCode != 24 {
-		reportResult("Photos backup", res)
-		return rollback(errors.New("copying the Photos library did not finish"))
-	}
-	db := photosDB(l.dst)
-	if err := os.Rename(snapshot, db); err != nil {
-		return rollback(err)
-	}
-	os.Remove(db + "-wal")
-	os.Remove(db + "-shm")
-	if err := verifyPhotoBackup(l, srcItems); err != nil {
-		return rollback(err)
-	}
-	if hadPrevious {
-		discard := l.previous() + ".discard"
-		if os.Rename(l.previous(), discard) == nil {
-			os.RemoveAll(discard)
-		}
+	if err := verifyPhotoBackup(staging, srcItems); err != nil {
+		return err
 	}
 	ok("Photos library %s backed up and verified (%d items) in %s", l.name, srcItems, res.duration.Round(time.Second))
 	return nil
 }
 
-func verifyPhotoBackup(l photoLibrary, wantItems int) error {
-	check, err := sqliteQuery(photosDB(l.dst), "pragma quick_check;")
+func verifyPhotoBackup(lib string, wantItems int) error {
+	check, err := sqliteQuery(photosDB(lib), "pragma quick_check;")
 	if err != nil {
 		return err
 	}
 	if check != "ok" {
 		return fmt.Errorf("the copied Photos database failed its integrity check: %s", truncate(check, 200))
 	}
-	got, err := libraryItems(l.dst)
+	got, err := libraryItems(lib)
 	if err != nil {
 		return err
 	}
@@ -217,24 +187,19 @@ func verifyPhotoBackup(l photoLibrary, wantItems int) error {
 }
 
 func previewPhotoBackup(bin string, l photoLibrary, srcItems int) error {
-	out, err := exec.Command(bin, photoArgs(l, "--dry-run", "--no-h", "--out-format=%i %l %n")...).Output()
-	var exit *exec.ExitError
-	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 24) {
-		return fmt.Errorf("previewing the Photos backup failed: %w", err)
-	}
 	var files, deleted int
 	var bytes int64
-	for _, line := range strings.Split(string(out), "\n") {
-		if strings.HasPrefix(line, "*deleting") {
+	err := dryRun(bin, photoArgs(l.src, l.dst), func(it rsyncItem) {
+		switch {
+		case it.deletion():
 			deleted++
-			continue
-		}
-		fields := strings.SplitN(line, " ", 3)
-		if len(fields) == 3 && strings.HasPrefix(fields[0], ">f") {
+		case it.file():
 			files++
-			n, _ := strconv.ParseInt(fields[1], 10, 64)
-			bytes += n
+			bytes += it.size
 		}
+	})
+	if err != nil {
+		return err
 	}
 	step("Photos library %s (%d items)", l.name, srcItems)
 	note("%s to copy (%s), %s to remove from the backup, plus the database", plural(files, "file"), humanBytes(bytes), plural(deleted, "file or folder", "files and folders"))
@@ -257,13 +222,8 @@ func lastPhotoBackup(e env) string {
 	return strings.Join(parts, " · ")
 }
 
-func backedUpLibraries(e env) []string {
-	paths, _ := filepath.Glob(filepath.Join(e.photosDir(), "*.photoslibrary"))
-	return paths
-}
-
 func restorePhotos(e env, target string) error {
-	libs := backedUpLibraries(e)
+	libs := librariesIn(e.photosDir())
 	if len(libs) == 0 {
 		return fmt.Errorf("no Photos library backed up in %s", e.photosDir())
 	}
@@ -280,7 +240,7 @@ func restorePhotos(e env, target string) error {
 		if err := os.MkdirAll(target, 0o755); err != nil {
 			return err
 		}
-		res, err := runJob("Restoring "+filepath.Base(src)+" → "+dst, rsyncJob{bin: bin, args: []string{"-ahXN", "--info=progress2", src + "/", dst + "/"}, logPath: logPath(e, "restore")})
+		res, err := runJob("Restoring "+filepath.Base(src)+" → "+dst, rsyncJob{bin: bin, args: rsyncArgs(src+"/", dst+"/"), logPath: logPath(e, "restore")})
 		if err != nil {
 			return err
 		}

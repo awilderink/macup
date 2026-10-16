@@ -1,15 +1,12 @@
 package main
 
 import (
-	"bufio"
-	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -52,10 +49,13 @@ func (p restorePlan) bytesFor(m conflictMode) int64 {
 
 func cmdRestore(e env, args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
-	var paths multiFlag
-	fs.Var(&paths, "path", "path inside the backup to restore, e.g. .ssh or Documents/taxes (repeatable)")
+	var paths []string
+	fs.Func("path", "path inside the backup to restore, e.g. .ssh or Documents/taxes (repeatable)", func(s string) error {
+		paths = append(paths, s)
+		return nil
+	})
 	target := fs.String("target", e.home, "where to restore to")
-	mode := fs.String("mode", string(keepNewer), "when a file already exists: update (keep newer local files), missing (never touch existing files), overwrite")
+	mode := fs.String("mode", "", "when a file already exists: update (keep newer local files, the default with --path), missing (never touch existing files), overwrite")
 	dry := fs.Bool("dry-run", false, "only show what would be restored")
 	fs.BoolVar(dry, "n", false, "shorthand for --dry-run")
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
@@ -67,58 +67,47 @@ func cmdRestore(e env, args []string) error {
 		return restorePhotos(e, filepath.Join(*target, "Pictures"))
 	}
 	m := conflictMode(*mode)
-	if m != keepNewer && m != onlyMissing && m != overwrite {
+	if m != "" && m != keepNewer && m != onlyMissing && m != overwrite {
 		return fmt.Errorf("unknown --mode %q", *mode)
 	}
-	src, err := restoreSource(e)
-	if err != nil {
+	if err := requireBackup(e); err != nil {
 		return err
 	}
 	if len(paths) == 0 {
 		if !interactive() {
 			return fmt.Errorf("pass --path (repeatable) or run in a terminal to pick files")
 		}
-		return restoreInteractive(e, src, *target, *dry)
-	}
-	for i, p := range paths {
-		paths[i] = strings.Trim(filepath.ToSlash(filepath.Clean(p)), "/")
-		if paths[i] == "" || paths[i] == "." || strings.HasPrefix(paths[i], "..") {
-			return fmt.Errorf("invalid --path %q", p)
+		picked, err := pickPaths(e.backupHome())
+		if err != nil {
+			return err
 		}
-		if _, err := os.Lstat(filepath.Join(src, paths[i])); err != nil {
-			return fmt.Errorf("%s is not in the backup", p)
+		paths = picked
+	} else {
+		if m == "" {
+			m = keepNewer
 		}
-	}
-	bin, err := findRsync(e)
-	if err != nil {
-		return err
-	}
-	plan, err := planWithSpinner(bin, src, *target, paths)
-	if err != nil {
-		return err
-	}
-	printPlan(plan)
-	if *dry {
-		return nil
-	}
-	if !*yes && interactive() {
-		proceed, err := confirm(fmt.Sprintf("Restore %s into %s?", humanBytes(plan.bytesFor(m)), *target), "", true)
-		if err != nil || !proceed {
-			return errCancelled
+		for i, p := range paths {
+			paths[i] = strings.Trim(filepath.ToSlash(filepath.Clean(p)), "/")
+			if paths[i] == "" || paths[i] == "." || strings.HasPrefix(paths[i], "..") {
+				return fmt.Errorf("invalid --path %q", p)
+			}
+			if _, err := os.Lstat(filepath.Join(e.backupHome(), paths[i])); err != nil {
+				return fmt.Errorf("%s is not in the backup", p)
+			}
 		}
 	}
-	return runRestore(e, bin, src, *target, paths, m)
+	return restorePaths(e, *target, paths, m, *dry, *yes)
 }
 
-func restoreSource(e env) (string, error) {
+func requireBackup(e env) error {
 	if _, err := os.Stat(e.backupHome()); err != nil {
-		return "", fmt.Errorf("no backup at %s — is the drive connected?", e.backupHome())
+		return fmt.Errorf("no backup at %s — is the drive connected?", e.backupHome())
 	}
-	return e.backupHome(), nil
+	return nil
 }
 
 func restoreMenu(e env) error {
-	if len(backedUpLibraries(e)) > 0 {
+	if len(librariesIn(e.photosDir())) > 0 {
 		what := "files"
 		if err := huh.NewSelect[string]().Title("What do you want to restore?").Options(
 			huh.NewOption("Files and folders from the home-folder backup", "files"),
@@ -130,24 +119,19 @@ func restoreMenu(e env) error {
 			return restorePhotos(e, filepath.Join(e.home, "Pictures"))
 		}
 	}
-	src, err := restoreSource(e)
-	if err != nil {
-		return err
-	}
-	return restoreInteractive(e, src, e.home, false)
+	return cmdRestore(e, nil)
 }
 
-func restoreInteractive(e env, src, target string, dry bool) error {
+func restorePaths(e env, target string, paths []string, m conflictMode, dry, yes bool) error {
 	bin, err := findRsync(e)
 	if err != nil {
 		return err
 	}
-	paths, err := pickPaths(src)
-	if err != nil {
+	var plan restorePlan
+	if err := withSpinner("Comparing the backup with "+target+"…", func() (err error) {
+		plan, err = planRestore(e, bin, target, paths)
 		return err
-	}
-	plan, err := planWithSpinner(bin, src, target, paths)
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 	printPlan(plan)
@@ -158,108 +142,74 @@ func restoreInteractive(e env, src, target string, dry bool) error {
 	if dry {
 		return nil
 	}
+	if m == "" {
+		if m, err = chooseMode(plan); err != nil {
+			return err
+		}
+	} else if !yes {
+		if err := confirmOrCancel(fmt.Sprintf("Restore %s into %s?", humanBytes(plan.bytesFor(m)), target), "", true); err != nil {
+			return err
+		}
+	}
+	if m == overwrite && plan.newerHere > 0 && !yes {
+		if err := confirmOrCancel(fmt.Sprintf("Replace %d files that are newer on this Mac?", plan.newerHere), "Their newer versions will be lost.", false); err != nil {
+			return err
+		}
+	}
+	return runRestore(e, bin, target, paths, m)
+}
+
+func chooseMode(plan restorePlan) (conflictMode, error) {
 	m := keepNewer
-	options := []huh.Option[conflictMode]{
+	err := huh.NewSelect[conflictMode]().Title("How should existing files be handled?").Options(
 		huh.NewOption(fmt.Sprintf("Keep files that are newer on this Mac — copies %s", humanBytes(plan.bytesFor(keepNewer))), keepNewer),
 		huh.NewOption(fmt.Sprintf("Only add missing files, never touch existing ones — copies %s", humanBytes(plan.bytesFor(onlyMissing))), onlyMissing),
 		huh.NewOption(fmt.Sprintf("Overwrite with the backup version — copies %s", humanBytes(plan.bytesFor(overwrite))), overwrite),
-	}
-	if err := huh.NewSelect[conflictMode]().Title("How should existing files be handled?").Options(options...).Value(&m).Run(); err != nil {
-		return err
-	}
-	if m == overwrite && plan.newerHere > 0 {
-		yes, err := confirm(fmt.Sprintf("Replace %d files that are newer on this Mac?", plan.newerHere), "Their newer versions will be lost.", false)
-		if err != nil || !yes {
-			return errCancelled
-		}
-	}
-	return runRestore(e, bin, src, target, paths, m)
+	).Value(&m).Run()
+	return m, err
 }
 
 func writeFileList(paths []string) (string, error) {
-	f, err := os.CreateTemp("", "macup-restore-*.list")
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	for _, p := range paths {
-		if _, err := f.WriteString(p + "\x00"); err != nil {
-			return "", err
-		}
-	}
-	return f.Name(), nil
+	return writeTemp("macup-restore-*.list", []byte(strings.Join(paths, "\x00")+"\x00"))
 }
 
-func restoreArgs(list, src, target string, m conflictMode, extra ...string) []string {
-	args := []string{"-ahXN", "-r", unreadableXattrs, "--from0", "--files-from=" + list}
+func restoreArgs(e env, list, target string, m conflictMode) []string {
+	args := rsyncArgs("-r", "--from0", "--files-from="+list)
 	args = append(args, m.flag()...)
-	args = append(args, extra...)
-	return append(args, strings.TrimSuffix(src, "/")+"/", strings.TrimSuffix(target, "/")+"/")
+	return append(args, e.backupHome()+"/", strings.TrimSuffix(target, "/")+"/")
 }
 
-func planWithSpinner(bin, src, target string, paths []string) (restorePlan, error) {
-	var plan restorePlan
-	var err error
-	action := func() { plan, err = planRestore(bin, src, target, paths) }
-	if serr := withSpinner("Comparing the backup with "+target+"…", action); serr != nil {
-		return plan, serr
-	}
-	return plan, err
-}
-
-func planRestore(bin, src, target string, paths []string) (restorePlan, error) {
+func planRestore(e env, bin, target string, paths []string) (restorePlan, error) {
 	list, err := writeFileList(paths)
 	if err != nil {
 		return restorePlan{}, err
 	}
 	defer os.Remove(list)
-	args := restoreArgs(list, src, target, overwrite, "--dry-run", "--no-h", "--out-format=%i %l %n")
-	cmd := exec.Command(bin, args...)
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		return restorePlan{}, err
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return restorePlan{}, err
-	}
 	var plan restorePlan
-	sc := bufio.NewScanner(out)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		plan.add(sc.Text(), src, target)
-	}
-	if err := cmd.Wait(); err != nil {
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) || (exit.ExitCode() != 23 && exit.ExitCode() != 24) {
-			return plan, fmt.Errorf("comparing failed: %v %s", err, strings.TrimSpace(stderr.String()))
-		}
-	}
-	return plan, nil
+	err = dryRun(bin, restoreArgs(e, list, target, overwrite), func(it rsyncItem) {
+		plan.add(it, e.backupHome(), target)
+	})
+	return plan, err
 }
 
-func (p *restorePlan) add(line, src, target string) {
-	fields := strings.SplitN(line, " ", 3)
-	if len(fields) != 3 || len(fields[0]) < 2 || fields[0][1] != 'f' || fields[0][0] != '>' {
+func (p *restorePlan) add(it rsyncItem, src, target string) {
+	if !it.file() {
 		return
 	}
-	size, _ := strconv.ParseInt(fields[1], 10, 64)
-	name := fields[2]
-	if strings.HasPrefix(fields[0][2:], "+++") {
+	if it.isNew() {
 		p.newFiles++
-		p.newBytes += size
+		p.newBytes += it.size
 		return
 	}
 	p.changed++
-	p.changedBytes += size
-	here, err1 := os.Lstat(filepath.Join(target, name))
-	there, err2 := os.Lstat(filepath.Join(src, name))
+	p.changedBytes += it.size
+	here, err1 := os.Lstat(filepath.Join(target, it.name))
+	there, err2 := os.Lstat(filepath.Join(src, it.name))
 	if err1 == nil && err2 == nil && here.ModTime().After(there.ModTime()) {
 		p.newerHere++
-		p.newerHereBytes += size
+		p.newerHereBytes += it.size
 		if len(p.newerSamples) < 8 {
-			p.newerSamples = append(p.newerSamples, name)
+			p.newerSamples = append(p.newerSamples, it.name)
 		}
 	}
 }
@@ -279,16 +229,19 @@ func printPlan(p restorePlan) {
 	}
 }
 
-func runRestore(e env, bin, src, target string, paths []string, m conflictMode) error {
+func touches(paths []string, dir string) bool {
+	return slices.ContainsFunc(paths, func(p string) bool { return p == dir || isUnder(p, dir) })
+}
+
+func runRestore(e env, bin, target string, paths []string, m conflictMode) error {
 	list, err := writeFileList(paths)
 	if err != nil {
 		return err
 	}
 	defer os.Remove(list)
-	for _, p := range paths {
-		if p == "Library" || strings.HasPrefix(p, "Library/") {
-			checkFullDiskAccess(e, "restore", true)
-			break
+	if touches(paths, "Library") {
+		if g := fullDiskAccessGuard(e, "restore"); g != nil {
+			warn("%s", g.problem)
 		}
 	}
 	l, err := acquireLock(e.lockDir())
@@ -296,18 +249,13 @@ func runRestore(e env, bin, src, target string, paths []string, m conflictMode) 
 		return err
 	}
 	defer l.release()
-	job := rsyncJob{bin: bin, args: restoreArgs(list, src, target, m, "--info=progress2"), logPath: logPath(e, "restore")}
-	res, err := runJob(fmt.Sprintf("Restoring %d items into %s", len(paths), target), job)
+	job := rsyncJob{bin: bin, args: restoreArgs(e, list, target, m), logPath: logPath(e, "restore")}
+	res, err := runJob(fmt.Sprintf("Restoring %s into %s", plural(len(paths), "item"), target), job)
 	if err != nil {
 		return err
 	}
-	if res.ok() {
-		for _, p := range paths {
-			if p == ".ssh" || strings.HasPrefix(p, ".ssh/") {
-				fixSSHPermissions(filepath.Join(target, ".ssh"))
-				break
-			}
-		}
+	if res.ok() && touches(paths, ".ssh") {
+		fixSSHPermissions(filepath.Join(target, ".ssh"))
 	}
 	return reportResult("Restore", res)
 }

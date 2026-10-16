@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type preset struct {
@@ -15,8 +16,10 @@ type preset struct {
 	paths []string
 }
 
+var shellPreset = preset{"Shell: zsh, Oh My Zsh, Cargo env", []string{".zshrc", ".zprofile", ".zshenv", ".oh-my-zsh", ".cargo/env"}}
+
 var presets = []preset{
-	{"Shell: zsh, Oh My Zsh, Cargo env", []string{".zshrc", ".zprofile", ".zshenv", ".oh-my-zsh", ".cargo/env"}},
+	shellPreset,
 	{"Claude Code config", []string{".claude"}},
 	{"SSH keys and config", []string{".ssh"}},
 	{"Nix config", []string{".config/nix-darwin"}},
@@ -45,18 +48,21 @@ type picker struct {
 	height    int
 	sel       *selection
 	sizes     *sizer
-	presets   bool
-	status    string
-	confirmed bool
+	presets     bool
+	status      string
+	confirmed   bool
+	selSize     int64
+	selComplete bool
 }
 
 func newPicker(root string, sel *selection) (*picker, error) {
-	top := &node{rel: "", dir: true, depth: -1, expanded: true}
+	top := &node{depth: -1}
 	p := &picker{root: root, top: top, sel: sel, sizes: newSizer(4), height: 20, width: 80}
 	if err := p.load(top); err != nil {
 		return nil, err
 	}
 	p.flatten()
+	p.refreshSelectedSize()
 	return p, nil
 }
 
@@ -70,7 +76,6 @@ func (p *picker) load(n *node) error {
 	if err != nil {
 		return err
 	}
-	n.children = n.children[:0]
 	for _, e := range entries {
 		c := &node{name: e.Name(), rel: joinRel(n.rel, e.Name()), dir: e.IsDir(), depth: n.depth + 1}
 		if !c.dir {
@@ -80,12 +85,14 @@ func (p *picker) load(n *node) error {
 		}
 		n.children = append(n.children, c)
 	}
-	sort.SliceStable(n.children, func(i, j int) bool {
-		a, b := n.children[i], n.children[j]
+	slices.SortStableFunc(n.children, func(a, b *node) int {
 		if a.dir != b.dir {
-			return a.dir
+			if a.dir {
+				return -1
+			}
+			return 1
 		}
-		return strings.ToLower(a.name) < strings.ToLower(b.name)
+		return strings.Compare(strings.ToLower(a.name), strings.ToLower(b.name))
 	})
 	for i := len(n.children) - 1; i >= 0; i-- {
 		if n.children[i].dir {
@@ -138,13 +145,18 @@ func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.width, p.height = msg.Width, msg.Height
 		}
 	case sizeTickMsg:
+		p.refreshSelectedSize()
 		return p, p.waitSizes()
 	case tea.KeyMsg:
 		p.status = ""
+		var cmd tea.Cmd
 		if p.presets {
-			return p, p.handlePresetKey(msg.String())
+			cmd = p.handlePresetKey(msg.String())
+		} else {
+			cmd = p.handleKey(msg.String())
 		}
-		return p, p.handleKey(msg.String())
+		p.refreshSelectedSize()
+		return p, cmd
 	}
 	return p, nil
 }
@@ -158,14 +170,11 @@ func (p *picker) handlePresetKey(key string) tea.Cmd {
 	if i >= len(presets) {
 		return nil
 	}
-	added := 0
-	for _, rel := range presets[i].paths {
-		if _, err := os.Lstat(filepath.Join(p.root, rel)); err == nil {
-			p.sel.add(rel)
-			added++
-		}
+	found := existingPaths(p.root, presets[i].paths)
+	for _, rel := range found {
+		p.sel.add(rel)
 	}
-	p.status = fmt.Sprintf("%s: %d of %d paths found in the backup", presets[i].name, added, len(presets[i].paths))
+	p.status = fmt.Sprintf("%s: %d of %d paths found in the backup", presets[i].name, len(found), len(presets[i].paths))
 	return nil
 }
 
@@ -233,12 +242,7 @@ func (p *picker) handleKey(key string) tea.Cmd {
 		if i := p.parentIndex(p.cursor); i >= 0 {
 			parent = p.rows[i]
 		}
-		all := true
-		for _, c := range parent.children {
-			if p.sel.state(c.rel) != checked {
-				all = false
-			}
-		}
+		all := !slices.ContainsFunc(parent.children, func(c *node) bool { return p.sel.state(c.rel) != checked })
 		for _, c := range parent.children {
 			if all {
 				p.sel.remove(c.rel)
@@ -266,7 +270,7 @@ func (p *picker) sizeLabel(n *node) string {
 	return "…"
 }
 
-func (p *picker) selectedSize() (int64, bool) {
+func (p *picker) refreshSelectedSize() {
 	var total int64
 	complete := true
 	for rel := range p.sel.paths {
@@ -286,7 +290,7 @@ func (p *picker) selectedSize() (int64, bool) {
 			p.sizes.request(abs)
 		}
 	}
-	return total, complete
+	p.selSize, p.selComplete = total, complete
 }
 
 func (p *picker) View() string {
@@ -328,7 +332,7 @@ func (p *picker) View() string {
 			name += "/"
 		}
 		left := strings.Repeat("  ", n.depth) + arrow
-		nameW := max(10, p.width-len(left)-sizeW-8)
+		nameW := max(10, p.width-lipgloss.Width(left)-sizeW-8)
 		line := fmt.Sprintf("%s%s %-*s %*s", left, box, nameW, truncate(name, nameW), sizeW, p.sizeLabel(n))
 		if i == p.cursor {
 			line = styleCursor.Render(line)
@@ -342,9 +346,8 @@ func (p *picker) View() string {
 	if p.status != "" {
 		b.WriteString(styleWarn.Render(p.status) + "\n")
 	} else {
-		size, complete := p.selectedSize()
-		label := humanBytes(size)
-		if !complete {
+		label := humanBytes(p.selSize)
+		if !p.selComplete {
 			label = "≥ " + label + " (still measuring)"
 		}
 		b.WriteString(styleDim.Render(fmt.Sprintf("%d selected · %s", len(p.sel.paths), label)) + "\n")
