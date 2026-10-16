@@ -1,3 +1,4 @@
+- /Pictures/*.photoslibrary
 - *.tmp
 + *leveldb/*.log
 - *.log

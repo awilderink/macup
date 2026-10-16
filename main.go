@@ -31,7 +31,7 @@ Usage:
                              open the Nix config in your editor
   macup status               drive, last backup, Nix and config at a glance
 
-Backup rules live in /Volumes/Backup/MacBootstrap/macup/backup.rules.
+What the backup skips is compiled in from backup.rules in the macup repo.
 `
 
 func main() {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -64,12 +65,13 @@ func TestRealConfigIsEditable(t *testing.T) {
 		file string
 		edit func(string, []string, bool) (string, []string, error)
 	}{
-		{"../nix-darwin/home.nix", editPackages},
-		{"../nix-darwin/flake.nix", editCasks},
+		{"home.nix", editPackages},
+		{"flake.nix", editCasks},
 	} {
-		src, err := readIfExists(tc.file)
+		home, _ := os.UserHomeDir()
+		src, err := readIfExists(filepath.Join(home, ".config", "nix-darwin", tc.file))
 		if err != nil {
-			t.Skip("drive copy of the config not present")
+			t.Skip("no nix-darwin config on this machine")
 		}
 		if _, changed, err := tc.edit(src, []string{"macup-test-package"}, true); err != nil || len(changed) != 1 {
 			t.Fatalf("%s: changed=%v err=%v", tc.file, changed, err)

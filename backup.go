@@ -56,7 +56,7 @@ func backupMenu(e env) error {
 	return runBackup(e, backupOptions{dryRun: dry, mirror: mode == "mirror"})
 }
 
-func backupArgs(e env, o backupOptions) []string {
+func backupArgs(e env, o backupOptions, rules string) []string {
 	args := []string{"-ahXN", "--info=progress2"}
 	if o.dryRun {
 		args = append(args, "--dry-run")
@@ -67,16 +67,13 @@ func backupArgs(e env, o backupOptions) []string {
 	for _, x := range o.excludes {
 		args = append(args, "--exclude="+x)
 	}
-	args = append(args, "--filter=merge "+e.rulesFile())
+	args = append(args, "--filter=merge "+rules)
 	return append(args, e.home+"/", e.backupHome()+"/")
 }
 
 func runBackup(e env, o backupOptions) error {
 	if err := checkMounted(e.volume); err != nil {
 		return err
-	}
-	if _, err := os.Stat(e.rulesFile()); err != nil {
-		return fmt.Errorf("backup rules file missing: %s", e.rulesFile())
 	}
 	if o.mirror && !o.dryRun && !o.yes {
 		if !interactive() {
@@ -99,6 +96,11 @@ func runBackup(e env, o backupOptions) error {
 	if err := os.MkdirAll(e.backupHome(), 0o755); err != nil {
 		return err
 	}
+	rules, err := writeRulesFile()
+	if err != nil {
+		return err
+	}
+	defer os.Remove(rules)
 	title := fmt.Sprintf("Backing up %s → %s", e.home, e.backupHome())
 	if o.mirror {
 		title += " (mirror)"
@@ -106,7 +108,7 @@ func runBackup(e env, o backupOptions) error {
 	if o.dryRun {
 		title = "Previewing backup (dry run)"
 	}
-	res, err := runJob(title, rsyncJob{bin: bin, args: backupArgs(e, o), logPath: logPath(e, "backup")})
+	res, err := runJob(title, rsyncJob{bin: bin, args: backupArgs(e, o, rules), logPath: logPath(e, "backup")})
 	if err != nil {
 		return err
 	}
