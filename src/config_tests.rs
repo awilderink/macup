@@ -36,3 +36,16 @@ fn template_parses() {
     let c: Config = toml::from_str(TEMPLATE).unwrap();
     assert!(c.backup.rules.is_empty());
 }
+
+#[test]
+fn reads_nix_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(FILE_NAME),
+        "[nix]\nenabled = false\nconfig = \"~/dotfiles/darwin\"\n",
+    )
+    .unwrap();
+    let c = Config::load(dir.path()).unwrap();
+    assert_eq!(c.nix.enabled, Some(false));
+    assert_eq!(c.nix.config.as_deref(), Some("~/dotfiles/darwin"));
+}

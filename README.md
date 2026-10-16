@@ -83,7 +83,13 @@ rules = [
 [[restore.presets]]
 name = "Claude Code config"
 paths = [".claude"]
+
+[nix]
+enabled = true
+config = "~/.config/nix-darwin"
 ```
+
+`[nix]` is optional too. Without it, the Nix commands (`apply`, `add`, `remove`, `edit`) are available when Nix is installed or a nix-darwin config exists in `~/.config/nix-darwin` or `nix-darwin/` on the drive; `enabled = false` turns them off, and `config` points at a flake elsewhere. Without Nix, macup is a backup and restore tool: install GNU rsync with `brew install rsync`.
 
 `backup.rules` are rsync filter rules (`- ` excludes, `+ ` includes; the first match wins). They sit between macup's built-in rules: first the exclusions of junk that is never worth backing up (caches, logs, `node_modules`, `.DS_Store`, macOS per-machine state, Photos libraries), then yours, then the built-in structure (only `~/Library/Application Support` from `~/Library`, toolchain caches like `.rustup` and `.npm`, and which parts of `~/.claude` to keep). So your `+` rules can bring back folders under `~/Library`, but not junk inside them. The built-in sets are in `rules/` in this repo. Restore presets appear under `p` in the restore picker, after the built-in shell, SSH and Nix presets. Logs go to `~/.backup-logs`.
 

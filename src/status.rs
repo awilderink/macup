@@ -57,6 +57,10 @@ pub fn show(e: &Env) {
             .to_string(),
         },
     );
+    if !e.nix_enabled() {
+        row("Nix", "off for this drive (macup.toml)".into());
+        return;
+    }
     row(
         "Nix",
         find_nix()

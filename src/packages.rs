@@ -88,6 +88,7 @@ fn apply_change(mut next: Vec<String>, names: &[String], add: bool) -> (Vec<Stri
 }
 
 pub fn change(e: &Env, names: &[String], app: bool, add: bool) -> Result<()> {
+    crate::nix::require_nix(e)?;
     if names.is_empty() {
         bail!(
             "usage: macup {} [--app] <name>...",

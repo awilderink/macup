@@ -242,24 +242,26 @@ fn menu(e: &Env) -> Result<()> {
         println!();
         status::show(e);
         println!();
-        let action = match ui::select(
-            "What do you want to do?",
-            &[
-                ("Back up this Mac".into(), Action::Backup),
+        let mut options = vec![
+            ("Back up this Mac".to_string(), Action::Backup),
+            (
+                "Restore files and folders from the backup".to_string(),
+                Action::Restore,
+            ),
+        ];
+        if e.nix_enabled() {
+            options.extend([
                 (
-                    "Restore files and folders from the backup".into(),
-                    Action::Restore,
-                ),
-                (
-                    "Install / apply the system configuration".into(),
+                    "Install / apply the system configuration".to_string(),
                     Action::Apply,
                 ),
-                ("Update all packages".into(), Action::Update),
-                ("Add a command-line tool or app".into(), Action::Add),
-                ("Edit the configuration".into(), Action::Edit),
-                ("Quit".into(), Action::Quit),
-            ],
-        ) {
+                ("Update all packages".to_string(), Action::Update),
+                ("Add a command-line tool or app".to_string(), Action::Add),
+                ("Edit the configuration".to_string(), Action::Edit),
+            ]);
+        }
+        options.push(("Quit".to_string(), Action::Quit));
+        let action = match ui::select("What do you want to do?", &options) {
             Ok(Action::Quit) | Err(_) => return Ok(()),
             Ok(action) => action,
         };

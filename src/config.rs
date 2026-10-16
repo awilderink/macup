@@ -9,6 +9,14 @@ pub const FILE_NAME: &str = "macup.toml";
 pub struct Config {
     pub backup: BackupConfig,
     pub restore: RestoreConfig,
+    pub nix: NixConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NixConfig {
+    pub enabled: Option<bool>,
+    pub config: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

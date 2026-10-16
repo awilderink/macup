@@ -8,6 +8,15 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub fn require_nix(e: &Env) -> Result<()> {
+    if !e.nix_enabled() {
+        bail!(
+            "Nix is turned off for this drive ([nix] enabled = false in macup.toml); macup only backs up and restores here"
+        );
+    }
+    Ok(())
+}
+
 pub fn find_nix() -> Option<PathBuf> {
     crate::rsync::which("nix").or_else(|| {
         [
@@ -96,6 +105,7 @@ pub fn flake_host(e: &Env, nix: &Path) -> Result<String> {
 }
 
 pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
+    require_nix(e)?;
     if std::env::consts::ARCH != "aarch64" {
         bail!(
             "this configuration targets Apple Silicon; update flake.nix before using it on Intel"
@@ -229,7 +239,7 @@ fn ensure_lock_owned(e: &Env) -> Result<()> {
 }
 
 pub fn sync_config_to_drive(e: &Env, rsync_bin: &str) -> Result<()> {
-    if !e.has_nix_config() {
+    if !e.nix_enabled() || !e.has_nix_config() {
         return Ok(());
     }
     std::fs::create_dir_all(e.drive_nix_dir())?;
@@ -300,6 +310,7 @@ fn offer_shell_restore(e: &Env) -> Result<()> {
 }
 
 pub fn edit(e: &Env, section: Option<String>) -> Result<()> {
+    require_nix(e)?;
     let section = match section {
         Some(s) => s,
         None if interactive() => select(

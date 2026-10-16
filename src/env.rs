@@ -77,7 +77,21 @@ impl Env {
     }
 
     pub fn nix_dir(&self) -> PathBuf {
-        self.home.join(".config").join("nix-darwin")
+        match self.config.nix.config.as_deref() {
+            Some(dir) => match dir.strip_prefix("~/") {
+                Some(rest) => self.home.join(rest),
+                None => PathBuf::from(dir),
+            },
+            None => self.home.join(".config").join("nix-darwin"),
+        }
+    }
+
+    pub fn nix_enabled(&self) -> bool {
+        self.config.nix.enabled.unwrap_or_else(|| {
+            self.has_nix_config()
+                || has_flake(&self.drive_nix_dir())
+                || crate::nix::find_nix().is_some()
+        })
     }
 
     pub fn log_dir(&self) -> PathBuf {

@@ -124,3 +124,22 @@ fn mirror_guard_counts_what_would_be_deleted() {
         "the preview deleted files"
     );
 }
+
+// A Mac without Nix must still be able to back up and restore; only the
+// commands that manage the system configuration refuse to run.
+#[test]
+fn nix_can_be_turned_off_per_drive() {
+    let (_dir, mut e) = fixture_env();
+    let mut config = crate::config::Config::default();
+    config.nix.enabled = Some(false);
+    config.nix.config = Some("~/dotfiles/darwin".into());
+    e.config = std::sync::Arc::new(config);
+    assert!(!e.nix_enabled());
+    assert_eq!(e.nix_dir(), e.home.join("dotfiles/darwin"));
+    assert!(crate::nix::require_nix(&e).is_err());
+    assert!(crate::packages::change(&e, &["htop".to_string()], false, true).is_err());
+    assert!(
+        crate::nix::sync_config_to_drive(&e, "/nonexistent/rsync").is_ok(),
+        "sync must be skipped, not attempted"
+    );
+}
