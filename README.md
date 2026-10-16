@@ -49,7 +49,7 @@ Several Macs can share a drive; each backs up into its own folder. `macup restor
 - **A copy of the library** (`photos/Photos Library.photoslibrary`) that follows the Mac. The database is copied as a consistent SQLite snapshot, Photos' iCloud upload cache is left out, and the update is built on a staging copy (an APFS clone, so almost no extra space) that is only swapped in, atomically, after an integrity check and an item count. A failed or interrupted run leaves the existing copy untouched. While the Photos app is open this copy is skipped with a warning.
 - **The originals archive** (`photos/originals/2024/2024-02-18/DSCF3245.JPG`, Live Photo videos next to their photo) that only ever grows. Every backup archives from the drive's library copy before and after updating it, so originals that leave the Mac — "Optimize Mac Storage", deleted photos — stay in the archive. Files are APFS clones of the library copy, so they take no extra space until the library copy drops them.
 
-With "Optimize Mac Storage" on, a photo whose original was never downloaded to this Mac exists only in iCloud. `macup backup` notices those and offers to download them into the archive through Photos (`--fetch-icloud` does it without asking; macOS asks once for Photos access). `macup photos` shows how much of the library is on the Mac, in the archive or only in iCloud; `macup photos --test-icloud` downloads one original through Photos and checks it against the archive.
+With "Optimize Mac Storage" on, a photo whose original was never downloaded to this Mac exists only in iCloud. `macup backup` notices those and offers to download them into the archive through Photos (`--fetch-icloud` does it without asking; macOS asks once for Photos access). `macup status --photos` shows how much of the library is on the Mac, in the archive or only in iCloud; adding `--test-icloud` also downloads one original through Photos and checks it against the archive.
 
 `macup restore --photos` (or the menu) copies the library back into `~/Pictures` and never overwrites one that is already there; a normal restore also skips any Photos library that already exists on the Mac.
 
@@ -66,7 +66,7 @@ With "Optimize Mac Storage" on, a photo whose original was never downloaded to t
 | Update all packages | `macup apply --update` |
 | Check the config builds without changing anything | `macup apply --check` |
 | Overview | `macup status` |
-| Photos coverage | `macup photos` |
+| Photos coverage | `macup status --photos` |
 
 `macup add` works out what each name is: a Mac app from Homebrew (`homebrew.casks`) when Homebrew has one, otherwise a command-line tool from nixpkgs (`home.packages`). When both exist it picks the app and says so; `--tool` or `--app` decides instead. It edits the list in whichever `.nix` file has it, keeping formatting and comments, and writes nothing unless every name was found; an unknown name lists the closest matches from search.nixos.org and Homebrew. `macup remove` takes a name out of `home.packages`, `homebrew.casks` or `homebrew.brews`. Homebrew is set up with `cleanup = "none"`, so removing an app from the config does not uninstall it; `macup remove` offers to, and also offers it for apps installed by hand with `brew`.
 
@@ -74,7 +74,7 @@ With "Optimize Mac Storage" on, a photo whose original was never downloaded to t
 
 ## Configuration
 
-macup finds the backup drive by looking for `macup.toml` at the root of a mounted volume (set `MACUP_VOLUME=/Volumes/<name>` to pick one when several are connected). `macup init /Volumes/<name>` creates it. Everything in it is optional:
+macup finds the backup drive by looking for `macup.toml` at the root of a mounted volume (set `MACUP_VOLUME=/Volumes/<name>` to pick one when several are connected). Running `macup` with a drive connected that has none offers to create it (`macup init /Volumes/<name>` does the same from a script). Everything in it is optional:
 
 ```toml
 [backup]

@@ -146,21 +146,19 @@ enum Command {
     #[command(about = "Open the Nix config in your editor: packages, apps or system")]
     Edit { section: Option<String> },
     #[command(about = "Drive, last backup, Photos, and tools and apps at a glance")]
-    Status,
-    #[command(about = "Set up a drive for macup by creating macup.toml on it")]
-    Init {
-        #[arg(value_name = "DRIVE", help = "the mounted drive, e.g. /Volumes/Backup")]
-        drive: PathBuf,
-    },
-    #[command(
-        about = "How much of the Photos library is on this Mac, in the originals archive or only in iCloud"
-    )]
-    Photos {
+    Status {
         #[arg(
             long,
-            help = "also download one original through Photos/iCloud and compare it with the archived copy"
+            help = "also show how much of the Photos library is on this Mac, kept on the drive or only in iCloud"
         )]
+        photos: bool,
+        #[arg(long, hide = true, requires = "photos")]
         test_icloud: bool,
+    },
+    #[command(hide = true)]
+    Init {
+        #[arg(value_name = "DRIVE")]
+        drive: PathBuf,
     },
 }
 
@@ -259,11 +257,17 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
         Command::Add { kind, names } => packages::add(e, &names, kind.forced()),
         Command::Remove { kind, names } => packages::remove(e, &names, kind.forced()),
         Command::Edit { section } => nix::edit(e, section),
-        Command::Photos { test_icloud } => photos::report(e, test_icloud),
         Command::Init { drive } => config::init_drive(&drive),
-        Command::Status => {
+        Command::Status {
+            photos,
+            test_icloud,
+        } => {
             status::show(e);
-            Ok(())
+            if !photos {
+                return Ok(());
+            }
+            println!();
+            photos::report(e, test_icloud)
         }
     }
 }
