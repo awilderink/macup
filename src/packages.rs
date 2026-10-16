@@ -1,6 +1,7 @@
 use crate::env::Env;
 use crate::nix::{ensure_config, find_nix, nix_args, offer_apply};
-use crate::ui::{note, ok};
+use crate::search;
+use crate::ui::{note, ok, with_spinner};
 use anyhow::{Context, Result, anyhow, bail};
 use rnix::{Root, SyntaxKind, SyntaxNode, ast};
 use rowan::ast::AstNode;
@@ -307,20 +308,52 @@ fn validate(e: &Env, name: &str, app: bool) -> Result<()> {
         bail!("Nix is not installed yet — run `macup apply` first")
     };
     let dir = e.nix_dir().display().to_string();
-    let attr = format!("nixpkgs#{name}.name");
-    let out = Command::new(nix)
-        .args(nix_args(&["eval", "--raw", "--inputs-from", &dir, &attr]))
-        .output()?;
+    let eval = |attr: &str| {
+        Command::new(&nix)
+            .args(nix_args(&["eval", "--raw", "--inputs-from", &dir, attr]))
+            .output()
+    };
+    let out = eval(&format!("nixpkgs#{name}.name"))?;
     if !out.status.success() {
-        bail!(
-            "nixpkgs has no package called {name:?} (search at https://search.nixos.org/packages?query={name})"
-        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !stderr.contains("does not provide attribute") {
+            bail!(
+                "could not look up {name:?} in nixpkgs:\n{}",
+                stderr
+                    .lines()
+                    .filter(|l| !l.starts_with("fetching "))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+        let release = eval("nixpkgs#lib.trivial.release")
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        bail!("{}", missing_package(name, release.as_deref()));
     }
     note(format!(
         "found {}",
         String::from_utf8_lossy(&out.stdout).trim()
     ));
     Ok(())
+}
+
+fn missing_package(name: &str, release: Option<&str>) -> String {
+    let url = search::web_url(name);
+    let hits = with_spinner("Searching search.nixos.org", || {
+        Ok(search::packages(release, name))
+    })
+    .ok()
+    .flatten()
+    .filter(|hits| !hits.is_empty());
+    match hits {
+        Some(hits) => format!(
+            "nixpkgs has no package called {name:?}. Closest matches on search.nixos.org:\n{}\nMore at {url}",
+            search::format(&hits)
+        ),
+        None => format!("nixpkgs has no package called {name:?} (search at {url})"),
+    }
 }
 
 #[cfg(test)]

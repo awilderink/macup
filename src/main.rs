@@ -12,6 +12,7 @@ mod picker;
 mod restore;
 mod rsync;
 mod rules;
+mod search;
 mod selection;
 mod sizer;
 mod status;
