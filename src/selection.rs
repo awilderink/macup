@@ -36,10 +36,10 @@ pub fn is_under(p: &str, dir: &str) -> bool {
     }
 }
 
-pub fn existing_paths(root: &Path, rels: &[&str]) -> Vec<String> {
+pub fn existing_paths(root: &Path, rels: &[String]) -> Vec<String> {
     rels.iter()
         .filter(|r| std::fs::symlink_metadata(root.join(r)).is_ok())
-        .map(|r| r.to_string())
+        .cloned()
         .collect()
 }
 

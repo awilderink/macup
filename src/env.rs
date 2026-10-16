@@ -1,19 +1,37 @@
+use crate::config::{self, Config};
+use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct Env {
     pub home: PathBuf,
     pub volume: PathBuf,
+    pub config: Arc<Config>,
 }
 
 impl Env {
-    pub fn load() -> Env {
+    pub fn load() -> Result<Env> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default();
-        Env {
+        let volume = match std::env::var_os("MACUP_VOLUME").filter(|v| !v.is_empty()) {
+            Some(v) => PathBuf::from(v),
+            None => detect_drive(Path::new("/Volumes"))?,
+        };
+        Ok(Env {
             home: env_or("MACUP_HOME", home),
-            volume: env_or("MACUP_VOLUME", PathBuf::from("/Volumes/Backup")),
+            config: Arc::new(Config::load(&volume)?),
+            volume,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn new(home: PathBuf, volume: PathBuf) -> Env {
+        Env {
+            home,
+            volume,
+            config: Arc::default(),
         }
     }
 
@@ -58,6 +76,31 @@ impl Env {
 
     pub fn has_nix_config(&self) -> bool {
         has_flake(&self.nix_dir())
+    }
+}
+
+pub fn detect_drive(volumes: &Path) -> Result<PathBuf> {
+    let mut drives: Vec<PathBuf> = std::fs::read_dir(volumes)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.join(config::FILE_NAME).is_file())
+                .collect()
+        })
+        .unwrap_or_default();
+    drives.sort();
+    match drives.len() {
+        0 => Ok(volumes.join("Backup")),
+        1 => Ok(drives.remove(0)),
+        _ => bail!(
+            "several backup drives are connected ({}); pick one with MACUP_VOLUME=/Volumes/<name>",
+            drives
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 

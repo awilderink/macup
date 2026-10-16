@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::errors::cancelled;
 use crate::selection::{CheckState, Selection, existing_paths, join_rel};
 use crate::sizer::Sizer;
@@ -12,31 +13,38 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+#[derive(Debug, Clone)]
 pub struct Preset {
-    pub name: &'static str,
-    pub paths: &'static [&'static str],
+    pub name: String,
+    pub paths: Vec<String>,
 }
 
-pub const SHELL_PRESET: Preset = Preset {
-    name: "Shell: zsh, Oh My Zsh, Cargo env",
-    paths: &[".zshrc", ".zprofile", ".zshenv", ".oh-my-zsh", ".cargo/env"],
-};
+fn preset(name: &str, paths: &[&str]) -> Preset {
+    Preset {
+        name: name.into(),
+        paths: paths.iter().map(|p| p.to_string()).collect(),
+    }
+}
 
-pub const PRESETS: [Preset; 4] = [
-    SHELL_PRESET,
-    Preset {
-        name: "Claude Code config",
-        paths: &[".claude"],
-    },
-    Preset {
-        name: "SSH keys and config",
-        paths: &[".ssh"],
-    },
-    Preset {
-        name: "Nix config",
-        paths: &[".config/nix-darwin"],
-    },
-];
+pub fn shell_preset() -> Preset {
+    preset(
+        "Shell: zsh, Oh My Zsh, Cargo env",
+        &[".zshrc", ".zprofile", ".zshenv", ".oh-my-zsh", ".cargo/env"],
+    )
+}
+
+pub fn presets(config: &Config) -> Vec<Preset> {
+    let mut all = vec![
+        shell_preset(),
+        preset("SSH keys and config", &[".ssh"]),
+        preset("Nix config", &[".config/nix-darwin"]),
+    ];
+    all.extend(config.restore.presets.iter().map(|p| Preset {
+        name: p.name.clone(),
+        paths: p.paths.clone(),
+    }));
+    all
+}
 
 struct Node {
     name: String,
@@ -59,7 +67,8 @@ pub struct Picker {
     height: usize,
     pub sel: Selection,
     sizes: Sizer,
-    presets: bool,
+    presets: Vec<Preset>,
+    showing_presets: bool,
     pub status: String,
     pub confirmed: bool,
     pub done: bool,
@@ -68,7 +77,7 @@ pub struct Picker {
 }
 
 impl Picker {
-    pub fn new(root: &Path) -> Result<Picker> {
+    pub fn new(root: &Path, presets: Vec<Preset>) -> Result<Picker> {
         let top = Node {
             name: String::new(),
             rel: String::new(),
@@ -89,7 +98,8 @@ impl Picker {
             height: 24,
             sel: Selection::new(root),
             sizes: Sizer::new(4),
-            presets: false,
+            presets,
+            showing_presets: false,
             status: String::new(),
             confirmed: false,
             done: false,
@@ -193,7 +203,7 @@ impl Picker {
 
     pub fn handle_key(&mut self, key: &str) {
         self.status.clear();
-        if self.presets {
+        if self.showing_presets {
             self.handle_preset_key(key);
         } else {
             self.handle_list_key(key);
@@ -202,16 +212,16 @@ impl Picker {
     }
 
     fn handle_preset_key(&mut self, key: &str) {
-        self.presets = false;
+        self.showing_presets = false;
         let Some(preset) = key
             .parse::<usize>()
             .ok()
             .and_then(|n| n.checked_sub(1))
-            .and_then(|i| PRESETS.get(i))
+            .and_then(|i| self.presets.get(i).cloned())
         else {
             return;
         };
-        let found = existing_paths(&self.root, preset.paths);
+        let found = existing_paths(&self.root, &preset.paths);
         for rel in &found {
             let _ = self.sel.add(rel);
         }
@@ -304,7 +314,7 @@ impl Picker {
                 }
             }
             "c" => self.sel.clear(),
-            "p" => self.presets = true,
+            "p" => self.showing_presets = true,
             _ => {}
         }
     }
@@ -357,10 +367,10 @@ impl Picker {
             ),
             Line::raw(""),
         ];
-        if self.presets {
+        if self.showing_presets {
             lines.push(Line::raw("Add a preset to the selection:"));
             lines.push(Line::raw(""));
-            for (i, p) in PRESETS.iter().enumerate() {
+            for (i, p) in self.presets.iter().enumerate() {
                 lines.push(Line::from(vec![
                     Span::raw(format!("  {}  {}  ", i + 1, p.name)),
                     Span::styled(p.paths.join(" "), dim),
@@ -457,8 +467,8 @@ fn key_name(code: KeyCode, mods: KeyModifiers) -> String {
     }
 }
 
-pub fn pick_paths(root: &Path) -> Result<Vec<String>> {
-    let mut picker = Picker::new(root)?;
+pub fn pick_paths(root: &Path, presets: Vec<Preset>) -> Result<Vec<String>> {
+    let mut picker = Picker::new(root, presets)?;
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         while !picker.done {

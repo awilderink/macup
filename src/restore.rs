@@ -1,7 +1,7 @@
 use crate::access::full_disk_access_guard;
 use crate::env::Env;
 use crate::photos;
-use crate::picker::pick_paths;
+use crate::picker::{pick_paths, presets};
 use crate::rsync::{
     Item, Job, TempFile, dir_arg, dry_run, find_rsync, log_path, rsync_args, write_temp,
 };
@@ -119,7 +119,7 @@ pub fn run(e: &Env, mut req: Request) -> Result<()> {
         if !interactive() {
             bail!("pass --path (repeatable) or run in a terminal to pick files");
         }
-        req.paths = pick_paths(&e.backup_home())?;
+        req.paths = pick_paths(&e.backup_home(), presets(&e.config))?;
     } else {
         req.mode.get_or_insert(Mode::KeepNewer);
         for p in req.paths.iter_mut() {

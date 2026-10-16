@@ -63,7 +63,24 @@ With "Optimize Mac Storage" on, a photo whose original was never downloaded to t
 
 `~/.config/nix-darwin` is the config you edit; `macup apply` and `macup backup` copy it to `/Volumes/Backup/nix-darwin` so a fresh Mac can start from it.
 
-What the backup skips (caches, `node_modules`, most of `~/Library`, Claude session history, …) is listed in `backup.rules`, in rsync filter syntax; the first matching rule wins. The rules are compiled into the binary, so rebuild after editing them. Photos libraries are skipped: the backup drive already holds the old library and has no room for the current one next to it. Logs go to `~/.backup-logs`.
+## Configuration
+
+macup finds the backup drive by looking for `macup.toml` at the root of a mounted volume (set `MACUP_VOLUME=/Volumes/<name>` to pick one when several are connected). `macup init /Volumes/<name>` creates it. Everything in it is optional:
+
+```toml
+[backup]
+rules = [
+  "- /go",
+  "- /code/**/target/",
+  "+ /Library/Pioneer/***",
+]
+
+[[restore.presets]]
+name = "Claude Code config"
+paths = [".claude"]
+```
+
+`backup.rules` are rsync filter rules (`- ` excludes, `+ ` includes; the first match wins). They sit between macup's built-in rules: first the exclusions of junk that is never worth backing up (caches, logs, `node_modules`, `.DS_Store`, macOS per-machine state, Photos libraries), then yours, then the built-in structure (only `~/Library/Application Support` from `~/Library`, toolchain caches like `.rustup` and `.npm`, and which parts of `~/.claude` to keep). So your `+` rules can bring back folders under `~/Library`, but not junk inside them. The built-in sets are in `rules/` in this repo. Restore presets appear under `p` in the restore picker, after the built-in shell, SSH and Nix presets. Logs go to `~/.backup-logs`.
 
 Do not put SSH keys, Claude credentials, API keys or other secrets in the Nix config.
 

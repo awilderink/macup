@@ -1,5 +1,6 @@
 mod access;
 mod backup;
+mod config;
 mod env;
 mod errors;
 mod guard;
@@ -131,6 +132,11 @@ enum Command {
     Edit { section: Option<String> },
     #[command(about = "Drive, last backup, Photos, Nix and config at a glance")]
     Status,
+    #[command(about = "Set up a drive for macup by creating macup.toml on it")]
+    Init {
+        #[arg(value_name = "DRIVE", help = "the mounted drive, e.g. /Volumes/Backup")]
+        drive: PathBuf,
+    },
     #[command(
         about = "How much of the Photos library is on this Mac, in the originals archive or only in iCloud"
     )]
@@ -146,11 +152,10 @@ enum Command {
 fn main() {
     ui::install_interrupt_handler();
     let cli = Cli::parse();
-    let e = Env::load();
-    let result = match cli.command {
+    let result = Env::load().and_then(|e| match cli.command {
         None => menu(&e),
         Some(command) => dispatch(&e, command),
-    };
+    });
     std::process::exit(errors::report(result));
 }
 
@@ -199,6 +204,7 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
         Command::Remove { app, names } => packages::change(e, &names, app, false),
         Command::Edit { section } => nix::edit(e, section),
         Command::Photos { test_icloud } => photos::report(e, test_icloud),
+        Command::Init { drive } => init(&drive),
         Command::Status => {
             status::show(e);
             Ok(())
@@ -273,4 +279,19 @@ fn add_menu(e: &Env) -> Result<()> {
         return Err(errors::cancelled());
     }
     packages::change(e, &[name.trim().to_string()], app, true)
+}
+
+fn init(drive: &std::path::Path) -> Result<()> {
+    volume::check_mounted(drive)?;
+    let path = drive.join(config::FILE_NAME);
+    if path.exists() {
+        ui::ok(format!("{} already exists", path.display()));
+    } else {
+        std::fs::write(&path, config::TEMPLATE)?;
+        ui::ok(format!(
+            "created {}; add your own backup rules and restore presets there (see the README)",
+            path.display()
+        ));
+    }
+    Ok(())
 }

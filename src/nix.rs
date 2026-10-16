@@ -1,5 +1,5 @@
 use crate::env::{Env, has_flake};
-use crate::picker::SHELL_PRESET;
+use crate::picker::shell_preset;
 use crate::selection::existing_paths;
 use crate::ui::{confirm, interactive, note, ok, select, step, warn};
 use crate::volume::check_mounted;
@@ -270,7 +270,7 @@ fn offer_shell_restore(e: &Env) -> Result<()> {
     if e.home.join(".oh-my-zsh").exists() {
         return Ok(());
     }
-    let paths = existing_paths(&e.backup_home(), SHELL_PRESET.paths);
+    let paths = existing_paths(&e.backup_home(), &shell_preset().paths);
     if paths.is_empty() {
         return Ok(());
     }

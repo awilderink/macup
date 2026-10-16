@@ -1,0 +1,29 @@
++ /Library/
++ /Library/Application Support/
++ /Library/Application Support/**
+- /Library/*
+- /.ollama
+- /.cargo/registry
+- /.cargo/git
+- /.npm
+- /.docker
+- /.bun
+- /.pnpm*
+- /.rustup
++ /.claude/
++ /.claude/projects/
++ /.claude/projects/*/
++ /.claude/projects/*/memory/
++ /.claude/projects/*/memory/***
+- /.claude/projects/***
++ /.claude/settings.json
++ /.claude/settings.local.json
++ /.claude/CLAUDE.md
++ /.claude/keybindings.json
++ /.claude/.credentials.json
++ /.claude/hooks/***
++ /.claude/agents/***
++ /.claude/agent-memory/***
++ /.claude/skills/***
++ /.claude/plugins/***
+- /.claude/*

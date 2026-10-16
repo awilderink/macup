@@ -9,7 +9,7 @@ pub fn fixture_env() -> (tempfile::TempDir, Env) {
     let volume = dir.path().join("volume");
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&volume).unwrap();
-    (dir, Env { home, volume })
+    (dir, Env::new(home, volume))
 }
 
 fn write(path: &std::path::Path, data: &str) {
@@ -40,7 +40,7 @@ fn embedded_rules_select_the_right_files() {
     ] {
         write(&e.home.join(f), "x");
     }
-    let rules = crate::rules::write_rules_file().unwrap();
+    let rules = crate::rules::write_rules_file(&e.config).unwrap();
     let mut files = vec![];
     dry_run(
         &bin,
@@ -106,7 +106,7 @@ fn mirror_guard_counts_what_would_be_deleted() {
     for f in ["kept.txt", "gone.txt", "old/a.txt"] {
         write(&e.backup_home().join(f), "x");
     }
-    let rules = crate::rules::write_rules_file().unwrap();
+    let rules = crate::rules::write_rules_file(&e.config).unwrap();
     let g = mirror_guard(
         &e,
         &Options {
