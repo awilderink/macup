@@ -80,6 +80,15 @@ pub fn assets(library: &Path) -> Result<HashMap<String, Asset>> {
     Ok(map)
 }
 
+pub fn primary_files(library: &Path) -> Result<Vec<(String, String)>> {
+    let conn = open(library)?;
+    let mut stmt = conn
+        .prepare("select ZUUID, ZDIRECTORY || '/' || ZFILENAME from ZASSET where ZTRASHEDSTATE = 0 and ZUUID is not null and ZDIRECTORY is not null and ZFILENAME is not null")
+        .context("this Photos database has an unknown layout (newer macOS?)")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
 pub fn uuid_of(file_name: &str) -> Option<&str> {
     let id = file_name.get(..36)?;
     let valid = id.char_indices().all(|(i, c)| {

@@ -37,14 +37,29 @@ pub fn make_library_with(
     let conn = Connection::open(&db).unwrap();
     conn.execute_batch(
         "pragma journal_mode=wal;
-         create table ZASSET(Z_PK integer primary key, ZUUID text, ZTRASHEDSTATE integer, ZDATECREATED real);
+         create table ZASSET(Z_PK integer primary key, ZUUID text, ZTRASHEDSTATE integer, ZDATECREATED real, ZDIRECTORY text, ZFILENAME text);
          create table ZADDITIONALASSETATTRIBUTES(Z_PK integer primary key, ZASSET integer, ZORIGINALFILENAME text);",
     )
     .unwrap();
     for (i, (uuid, name, created)) in assets.iter().enumerate() {
+        let ext = match std::path::Path::new(name)
+            .extension()
+            .map(|x| x.to_string_lossy().to_lowercase())
+            .as_deref()
+        {
+            Some("jpg") => "jpeg".to_string(),
+            Some(other) => other.to_string(),
+            None => "bin".to_string(),
+        };
         conn.execute(
-            "insert into ZASSET values (?1, ?2, 0, ?3)",
-            rusqlite::params![i as i64 + 1, uuid, (*created - 978_307_200) as f64],
+            "insert into ZASSET values (?1, ?2, 0, ?3, ?4, ?5)",
+            rusqlite::params![
+                i as i64 + 1,
+                uuid,
+                (*created - 978_307_200) as f64,
+                &uuid[..1],
+                format!("{uuid}.{ext}")
+            ],
         )
         .unwrap();
         conn.execute(
@@ -53,8 +68,11 @@ pub fn make_library_with(
         )
         .unwrap();
     }
-    conn.execute("insert into ZASSET values (100000, 'trashed', 1, 0)", [])
-        .unwrap();
+    conn.execute(
+        "insert into ZASSET values (100000, 'trashed', 1, 0, null, null)",
+        [],
+    )
+    .unwrap();
     drop(conn);
     for f in originals.iter().map(|s| s.to_string()).chain([
         "resources/derivatives/thumb.jpg".into(),
@@ -223,4 +241,64 @@ fn photo_restore_never_overwrites_an_existing_library() {
         restored.join("marker").exists(),
         "an existing library was overwritten"
     );
+}
+
+#[test]
+fn originals_missing_from_mac_and_archive_count_as_icloud_only() {
+    let Some((_dir, e, lib, bin)) = fixture() else {
+        return;
+    };
+    assert!(
+        icloud_only(&e, &lib).unwrap().is_empty(),
+        "originals present on the Mac are not iCloud-only"
+    );
+    backup_library(&e, false, &bin, &lib).unwrap();
+    assert!(icloud_only(&e, &lib).unwrap().is_empty());
+    let c = asset_file(UUID_C, "png");
+    let assets = vec![
+        (UUID_A.to_string(), "DSCF3245.JPG".to_string(), 700_000_000),
+        (UUID_B.to_string(), "IMG_0737.HEIC".to_string(), 600_000_000),
+        (
+            UUID_C.to_string(),
+            "Screenshot.png".to_string(),
+            650_000_000,
+        ),
+    ];
+    make_library_with(&lib.src, &assets, &[]);
+    fs::remove_file(lib.src.join(&c)).ok();
+    let missing = icloud_only(&e, &lib).unwrap();
+    assert_eq!(
+        missing,
+        vec![(
+            UUID_C.to_string(),
+            c.trim_start_matches("originals/").to_string()
+        )]
+    );
+}
+
+// Files downloaded from iCloud get the same keys the library would use, so a
+// later backup that sees the original on the Mac does not archive it twice.
+#[test]
+fn downloaded_originals_use_library_keys() {
+    let rel = format!("B/{UUID_A}.jpeg");
+    assert_eq!(
+        download_key(&rel, UUID_A, photokit::Kind::Primary, "DSCF3245.JPG"),
+        rel
+    );
+    assert_eq!(
+        download_key(&rel, UUID_A, photokit::Kind::PairedVideo, "IMG_1.MOV"),
+        format!("B/{UUID_A}_3.mov")
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let mut a = archive::Archive::open(dir.path()).unwrap();
+    let file = dir.path().join(".incoming-x");
+    fs::write(&file, "photo").unwrap();
+    a.add_downloaded(&rel, &file, "DSCF3245.JPG", Some(1_700_000_000))
+        .unwrap();
+    a.flush().unwrap();
+    assert!(
+        !file.exists(),
+        "the downloaded file should be moved into the archive"
+    );
+    assert!(archive::load_manifest(dir.path()).unwrap()[&rel].ends_with("/DSCF3245.JPG"));
 }

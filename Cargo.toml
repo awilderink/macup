@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 anyhow = "1"
+block2 = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 console = "0.16"
@@ -13,6 +14,9 @@ ctrlc = "3"
 dialoguer = "0.12"
 indicatif = "0.18"
 libc = "0.2"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSURL", "NSError", "NSObject"] }
+objc2-photos = { version = "0.3", features = ["PHAsset", "PHAssetResource", "PHAssetResourceManager", "PHFetchResult", "PHPhotoLibrary", "PHObject", "PhotosTypes", "PHFetchOptions", "block2"] }
 ratatui = "0.30"
 regex = "1"
 rusqlite = "0.40"

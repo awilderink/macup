@@ -33,6 +33,7 @@ pub fn load_manifest(archive: &Path) -> Result<HashMap<String, String>> {
 }
 
 pub fn archive_name(rel: &str, asset: Option<&Asset>) -> String {
+    let folder_of = |a: &Asset| date_folder(a.created);
     let file = rel.rsplit('/').next().unwrap_or(rel);
     let Some(asset) = asset else {
         return format!("unknown/{rel}");
@@ -59,12 +60,7 @@ pub fn archive_name(rel: &str, asset: Option<&Asset>) -> String {
         }
         (None, _) => file.to_string(),
     };
-    let folder = asset
-        .created
-        .and_then(|t| Local.timestamp_opt(t, 0).single())
-        .map(|d| d.format("%Y/%Y-%m-%d").to_string())
-        .unwrap_or_else(|| "undated".into());
-    format!("{folder}/{name}")
+    format!("{}/{name}", folder_of(asset))
 }
 
 fn with_suffix(name: &str, suffix: &str) -> String {
@@ -90,15 +86,130 @@ fn with_suffix(name: &str, suffix: &str) -> String {
     }
 }
 
-fn same_size(a: &Path, b: &Path) -> bool {
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(x), Ok(y)) => x.len() == y.len(),
-        _ => false,
+fn date_folder(created: Option<i64>) -> String {
+    created
+        .and_then(|t| Local.timestamp_opt(t, 0).single())
+        .map(|d| d.format("%Y/%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "undated".into())
+}
+
+fn set_taken_time(path: &Path, created: Option<i64>) {
+    if let Some(t) = created.filter(|t| *t > 0) {
+        let when = SystemTime::UNIX_EPOCH + Duration::from_secs(t as u64);
+        let _ = OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|f| f.set_times(FileTimes::new().set_modified(when)));
     }
 }
 
-fn reusable(src: &Path, target: &Path, name: &str, claimed: &HashSet<String>) -> bool {
-    !claimed.contains(name) && same_size(src, target)
+pub struct Archive {
+    dir: PathBuf,
+    manifest: HashMap<String, String>,
+    claimed: HashSet<String>,
+    log: File,
+}
+
+impl Archive {
+    pub fn open(dir: &Path) -> Result<Archive> {
+        std::fs::create_dir_all(dir)?;
+        let manifest = load_manifest(dir)?;
+        let claimed = manifest.values().cloned().collect();
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(manifest_path(dir))?;
+        Ok(Archive {
+            dir: dir.to_path_buf(),
+            manifest,
+            claimed,
+            log,
+        })
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        self.manifest.contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.manifest.len()
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    fn free_name(&self, name: String, key: &str, size: u64) -> Result<(String, bool)> {
+        let file = key.rsplit('/').next().unwrap_or(key);
+        let suffix = library::uuid_of(file).map(|u| &u[..8]).unwrap_or(file);
+        for candidate in [name.clone(), with_suffix(&name, suffix)] {
+            let target = self.dir.join(&candidate);
+            match std::fs::metadata(&target) {
+                Err(_) => return Ok((candidate, false)),
+                Ok(meta) if !self.claimed.contains(&candidate) && meta.len() == size => {
+                    return Ok((candidate, true));
+                }
+                Ok(_) => continue,
+            }
+        }
+        anyhow::bail!("cannot find a free name in the archive for {key}")
+    }
+
+    fn record(&mut self, key: &str, name: String) -> Result<()> {
+        writeln!(self.log, "{key}\t{name}")?;
+        self.claimed.insert(name.clone());
+        self.manifest.insert(key.to_string(), name);
+        Ok(())
+    }
+
+    pub fn add_clone(
+        &mut self,
+        key: &str,
+        src: &Path,
+        asset: Option<&Asset>,
+    ) -> Result<Option<u64>> {
+        let size = std::fs::metadata(src)?.len();
+        let (name, existing) = self.free_name(archive_name(key, asset), key, size)?;
+        let target = self.dir.join(&name);
+        if !existing {
+            std::fs::create_dir_all(target.parent().expect("archive files live in a folder"))?;
+            clonefile(src, &target)
+                .context("the originals archive must be on the same drive as the library copy")?;
+            set_taken_time(&target, asset.and_then(|a| a.created));
+        }
+        self.record(key, name)?;
+        Ok((!existing).then_some(size))
+    }
+
+    pub fn add_downloaded(
+        &mut self,
+        key: &str,
+        file: &Path,
+        original_name: &str,
+        created: Option<i64>,
+    ) -> Result<u64> {
+        let size = std::fs::metadata(file)?.len();
+        let name = format!(
+            "{}/{}",
+            date_folder(created),
+            original_name.replace('/', "_")
+        );
+        let (name, existing) = self.free_name(name, key, size)?;
+        let target = self.dir.join(&name);
+        if existing {
+            std::fs::remove_file(file)?;
+        } else {
+            std::fs::create_dir_all(target.parent().expect("archive files live in a folder"))?;
+            std::fs::rename(file, &target)?;
+            set_taken_time(&target, created);
+        }
+        self.record(key, name)?;
+        Ok(size)
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        Ok(self.log.flush()?)
+    }
 }
 
 pub fn update(
@@ -106,65 +217,24 @@ pub fn update(
     library: &Path,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<Stats> {
-    std::fs::create_dir_all(archive)?;
-    let mut manifest = load_manifest(archive)?;
+    let mut a = Archive::open(archive)?;
     let files = library::original_files(library)?;
-    let pending: Vec<&String> = files
-        .iter()
-        .filter(|f| !manifest.contains_key(*f))
-        .collect();
-    if pending.is_empty() {
-        return Ok(Stats {
-            total: manifest.len(),
-            ..Stats::default()
-        });
-    }
-    let assets = library::assets(library)?;
-    let mut claimed: HashSet<String> = manifest.values().cloned().collect();
-    let mut log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(manifest_path(archive))?;
+    let pending: Vec<&String> = files.iter().filter(|f| !a.contains(f)).collect();
     let mut stats = Stats::default();
-    for (n, rel) in pending.iter().enumerate() {
-        progress(n, pending.len());
-        let src = library.join("originals").join(rel);
-        let file = rel.rsplit('/').next().unwrap_or(rel);
-        let asset = library::uuid_of(file).and_then(|u| assets.get(u));
-        let mut name = archive_name(rel, asset);
-        let mut target = archive.join(&name);
-        if target.exists() && !reusable(&src, &target, &name, &claimed) {
-            name = with_suffix(
-                &name,
-                library::uuid_of(file).map(|u| &u[..8]).unwrap_or(file),
-            );
-            target = archive.join(&name);
-            if target.exists() && !reusable(&src, &target, &name, &claimed) {
-                anyhow::bail!("cannot find a free name in the archive for {rel}");
+    if !pending.is_empty() {
+        let assets = library::assets(library)?;
+        for (n, rel) in pending.iter().enumerate() {
+            progress(n, pending.len());
+            let file = rel.rsplit('/').next().unwrap_or(rel);
+            let asset = library::uuid_of(file).and_then(|u| assets.get(u));
+            if let Some(bytes) = a.add_clone(rel, &library.join("originals").join(rel), asset)? {
+                stats.added += 1;
+                stats.bytes += bytes;
             }
         }
-        if !target.exists() {
-            if let Some(dir) = target.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            clonefile(&src, &target)
-                .context("the originals archive must be on the same drive as the library copy")?;
-            if let Some(t) = asset.and_then(|a| a.created).filter(|t| *t > 0) {
-                let when = SystemTime::UNIX_EPOCH + Duration::from_secs(t as u64);
-                let _ = OpenOptions::new()
-                    .write(true)
-                    .open(&target)
-                    .and_then(|f| f.set_times(FileTimes::new().set_modified(when)));
-            }
-            stats.added += 1;
-            stats.bytes += std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-        }
-        writeln!(log, "{rel}\t{name}")?;
-        claimed.insert(name.clone());
-        manifest.insert(rel.to_string(), name);
+        a.flush()?;
     }
-    log.flush()?;
-    stats.total = manifest.len();
+    stats.total = a.len();
     Ok(stats)
 }
 

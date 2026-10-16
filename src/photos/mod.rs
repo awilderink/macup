@@ -1,9 +1,12 @@
 pub mod archive;
 pub mod library;
+pub mod photokit;
 
 use crate::env::Env;
 use crate::rsync::{Job, dir_arg, dry_run, find_rsync, log_path, rsync_args};
-use crate::ui::{human_bytes, note, ok, plural, report_result, run_job, step, warn, with_spinner};
+use crate::ui::{
+    human_bytes, note, ok, plural, report_result, run_job, step, warn, warning, with_spinner,
+};
 use crate::volume::{clonefile, rename_swap};
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
@@ -185,6 +188,192 @@ fn preview(bin: &str, lib: &PhotoLibrary, src_items: u64) -> Result<()> {
     Ok(())
 }
 
+pub fn icloud_only(e: &Env, lib: &PhotoLibrary) -> Result<Vec<(String, String)>> {
+    let manifest = archive::load_manifest(&e.archive_dir())?;
+    let originals = lib.src.join("originals");
+    Ok(library::primary_files(&lib.src)?
+        .into_iter()
+        .filter(|(_, rel)| !manifest.contains_key(rel) && !originals.join(rel).exists())
+        .collect())
+}
+
+fn download_key(rel: &str, uuid: &str, kind: photokit::Kind, name: &str) -> String {
+    let dir = rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let ext = Path::new(name)
+        .extension()
+        .map(|x| x.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    match kind {
+        photokit::Kind::Primary => rel.to_string(),
+        photokit::Kind::PairedVideo => format!("{dir}/{uuid}_3.{ext}"),
+        photokit::Kind::Alternate => format!("{dir}/{uuid}_alternate.{ext}"),
+        photokit::Kind::Audio => format!("{dir}/{uuid}_audio.{ext}"),
+    }
+}
+
+pub fn fetch_icloud(e: &Env, lib: &PhotoLibrary, fetch: bool, dry_run: bool) -> Result<()> {
+    let missing = icloud_only(e, lib)?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    warn(format!(
+        "{} only in iCloud: neither this Mac nor the originals archive has them",
+        plural(missing.len(), "original is", "originals are")
+    ));
+    if dry_run {
+        return Ok(());
+    }
+    if !fetch
+        && !(crate::ui::interactive()
+            && crate::ui::confirm(
+                "Download them from iCloud into the originals archive now?",
+                true,
+            )?)
+    {
+        note("download them later with `macup backup --photos-only --fetch-icloud`");
+        return Ok(());
+    }
+    if photokit::access() == photokit::Access::NotAsked {
+        note("macOS will ask once to give your terminal access to Photos");
+        photokit::request_access()?;
+    }
+    if photokit::access() != photokit::Access::Granted {
+        bail!(
+            "no access to Photos; allow it in System Settings → Privacy & Security → Photos, then try again"
+        );
+    }
+    let assets = library::assets(&lib.src)?;
+    let mut archive = archive::Archive::open(&e.archive_dir())?;
+    let incoming = archive.dir().to_path_buf();
+    let (mut done, mut failed, mut bytes) = (0, 0, 0);
+    for (n, (uuid, rel)) in missing.iter().enumerate() {
+        step(format!("[{}/{}] downloading {}", n + 1, missing.len(), rel));
+        let created = assets.get(uuid).and_then(|a| a.created);
+        match photokit::download_originals(uuid, &incoming) {
+            Ok(files) => {
+                for f in files {
+                    let key = download_key(rel, uuid, f.kind, &f.original_name);
+                    bytes += archive.add_downloaded(&key, &f.path, &f.original_name, created)?;
+                }
+                done += 1;
+            }
+            Err(err) => {
+                failed += 1;
+                warn(format!("{rel}: {err:#}"));
+            }
+        }
+    }
+    archive.flush()?;
+    ok(format!(
+        "downloaded {} into the originals archive ({})",
+        plural(done, "original", "originals"),
+        human_bytes(bytes)
+    ));
+    if failed > 0 {
+        bail!(
+            "{} could not be downloaded; run the backup again to retry",
+            plural(failed, "original", "originals")
+        );
+    }
+    Ok(())
+}
+
+pub fn report(e: &Env, test_icloud: bool) -> Result<()> {
+    let libs = photo_libraries(e);
+    if libs.is_empty() {
+        bail!("no Photos library in {}", e.home.join("Pictures").display());
+    }
+    let manifest = archive::load_manifest(&e.archive_dir())?;
+    for lib in &libs {
+        let primaries = library::primary_files(&lib.src)?;
+        let originals = lib.src.join("originals");
+        let local = primaries
+            .iter()
+            .filter(|(_, rel)| originals.join(rel).exists())
+            .count();
+        let archived = primaries
+            .iter()
+            .filter(|(_, rel)| manifest.contains_key(rel))
+            .count();
+        let only_icloud = icloud_only(e, lib)?.len();
+        step(format!("{} · {} items", lib.name, primaries.len()));
+        note(format!("{local} originals on this Mac"));
+        note(format!(
+            "{archived} in the originals archive ({} files in total, including Live Photo videos)",
+            manifest.len()
+        ));
+        if only_icloud > 0 {
+            warn(format!(
+                "{only_icloud} only in iCloud — `macup backup --photos-only --fetch-icloud` downloads them"
+            ));
+        } else {
+            ok("every original is on this Mac or in the archive");
+        }
+    }
+    let access = photokit::access();
+    note(format!(
+        "Photos access for iCloud downloads: {}",
+        match access {
+            photokit::Access::Granted => "granted",
+            photokit::Access::NotAsked => "not asked yet",
+            photokit::Access::Denied => "denied (System Settings → Privacy & Security → Photos)",
+        }
+    ));
+    if test_icloud {
+        test_download(e, &libs[0], &manifest)?;
+    }
+    Ok(())
+}
+
+fn test_download(
+    e: &Env,
+    lib: &PhotoLibrary,
+    manifest: &std::collections::HashMap<String, String>,
+) -> Result<()> {
+    let primaries = library::primary_files(&lib.src)?;
+    let Some((uuid, rel, archived)) = primaries.iter().find_map(|(uuid, rel)| {
+        manifest
+            .get(rel)
+            .map(|a| (uuid, rel, e.archive_dir().join(a)))
+    }) else {
+        bail!("nothing archived yet to compare against; run a backup first");
+    };
+    if photokit::access() == photokit::Access::NotAsked {
+        note("macOS will ask once to give your terminal access to Photos");
+        photokit::request_access()?;
+    }
+    if photokit::access() != photokit::Access::Granted {
+        bail!("no access to Photos; allow it in System Settings → Privacy & Security → Photos");
+    }
+    let dir = std::env::temp_dir().join(format!("macup-photokit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let result = with_spinner(
+        &format!("Asking Photos for the original of {rel}…"),
+        || photokit::download_originals(uuid, &dir),
+    );
+    let outcome = result.and_then(|files| {
+        let primary = files
+            .iter()
+            .find(|f| f.kind == photokit::Kind::Primary)
+            .ok_or_else(|| anyhow::anyhow!("Photos returned no primary original"))?;
+        if std::fs::read(&primary.path)? != std::fs::read(&archived)? {
+            bail!(
+                "Photos returned {} but it differs from the archived copy {}",
+                primary.original_name,
+                archived.display()
+            );
+        }
+        ok(format!(
+            "PhotoKit works: {} came back byte-identical to {}",
+            primary.original_name,
+            archived.display()
+        ));
+        Ok(())
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    outcome
+}
+
 pub fn last_photo_backup(e: &Env) -> String {
     let libs = photo_libraries(e);
     if libs.is_empty() {
@@ -207,6 +396,14 @@ pub fn last_photo_backup(e: &Env) -> String {
         && !manifest.is_empty()
     {
         parts.push(format!("archive: {} originals", manifest.len()));
+    }
+    let only_icloud: usize = libs
+        .iter()
+        .filter_map(|l| icloud_only(e, l).ok())
+        .map(|m| m.len())
+        .sum();
+    if only_icloud > 0 {
+        parts.push(warning(format!("{only_icloud} only in iCloud")).to_string());
     }
     parts.join(" · ")
 }

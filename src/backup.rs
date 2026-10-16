@@ -15,6 +15,7 @@ pub struct Options {
     pub yes: bool,
     pub no_photos: bool,
     pub photos_only: bool,
+    pub fetch_icloud: bool,
     pub excludes: Vec<String>,
 }
 
@@ -145,6 +146,7 @@ pub fn run(e: &Env, o: &Options) -> Result<()> {
         } else {
             photos::backup_library(e, o.dry_run, &bin, lib)?;
         }
+        photos::fetch_icloud(e, lib, o.fetch_icloud, o.dry_run)?;
     }
     if let Ok((free, total)) = free_space(&e.volume)
         && nearly_full(free, total)

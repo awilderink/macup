@@ -54,6 +54,11 @@ enum Command {
         photos_only: bool,
         #[arg(
             long,
+            help = "download originals that exist only in iCloud into the originals archive without asking"
+        )]
+        fetch_icloud: bool,
+        #[arg(
+            long,
             help = "continue past every safety check: no Full Disk Access, first backup from this Mac, mirror deletions"
         )]
         yes: bool,
@@ -126,6 +131,16 @@ enum Command {
     Edit { section: Option<String> },
     #[command(about = "Drive, last backup, Photos, Nix and config at a glance")]
     Status,
+    #[command(
+        about = "How much of the Photos library is on this Mac, in the originals archive or only in iCloud"
+    )]
+    Photos {
+        #[arg(
+            long,
+            help = "also download one original through Photos/iCloud and compare it with the archived copy"
+        )]
+        test_icloud: bool,
+    },
 }
 
 fn main() {
@@ -147,6 +162,7 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
             exclude,
             no_photos,
             photos_only,
+            fetch_icloud,
             yes,
         } => backup::run(
             e,
@@ -156,6 +172,7 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
                 yes,
                 no_photos,
                 photos_only,
+                fetch_icloud,
                 excludes: exclude,
             },
         ),
@@ -181,6 +198,7 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
         Command::Add { app, names } => packages::change(e, &names, app, true),
         Command::Remove { app, names } => packages::change(e, &names, app, false),
         Command::Edit { section } => nix::edit(e, section),
+        Command::Photos { test_icloud } => photos::report(e, test_icloud),
         Command::Status => {
             status::show(e);
             Ok(())
