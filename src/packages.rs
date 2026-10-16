@@ -1,7 +1,7 @@
 use crate::env::Env;
 use crate::nix::{ensure_config, find_nix, nix_args, offer_apply};
 use crate::search;
-use crate::ui::{note, ok, with_spinner};
+use crate::ui::{confirm, interactive, note, ok, with_spinner};
 use anyhow::{Context, Result, anyhow, bail};
 use rnix::{Root, SyntaxKind, SyntaxNode, ast};
 use rowan::ast::AstNode;
@@ -273,20 +273,56 @@ pub fn change(e: &Env, names: &[String], app: bool, add: bool) -> Result<()> {
     }
     if changed.is_empty() {
         ok("nothing to change");
+    } else {
+        std::fs::write(&file, out)?;
+        let shown = file
+            .strip_prefix(e.nix_dir())
+            .unwrap_or(&file)
+            .display()
+            .to_string();
+        ok(format!(
+            "{} {} in {shown}",
+            if add { "Added" } else { "Removed" },
+            changed.join(", ")
+        ));
+    }
+    if app && !add {
+        return offer_uninstall(names);
+    }
+    if changed.is_empty() {
         return Ok(());
     }
-    std::fs::write(&file, out)?;
-    let shown = file
-        .strip_prefix(e.nix_dir())
-        .unwrap_or(&file)
-        .display()
-        .to_string();
-    ok(format!(
-        "{} {} in {shown}",
-        if add { "Added" } else { "Removed" },
-        changed.join(", ")
-    ));
     offer_apply(e)
+}
+
+fn offer_uninstall(names: &[String]) -> Result<()> {
+    let Some(brew) = crate::rsync::which("brew") else {
+        return Ok(());
+    };
+    for name in names {
+        let installed = Command::new(&brew)
+            .args(["list", "--cask", name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !installed {
+            continue;
+        }
+        let keep = format!("{name} is still installed; `brew uninstall --cask {name}` removes it");
+        if !interactive() || !confirm(&format!("Also uninstall {name} from this Mac?"), true)? {
+            note(keep);
+            continue;
+        }
+        if !Command::new(&brew)
+            .args(["uninstall", "--cask", name])
+            .status()?
+            .success()
+        {
+            bail!("Homebrew could not uninstall {name}");
+        }
+        ok(format!("Uninstalled {name}"));
+    }
+    Ok(())
 }
 
 fn validate(e: &Env, name: &str, app: bool) -> Result<()> {
