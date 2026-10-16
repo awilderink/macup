@@ -66,6 +66,22 @@ impl Config {
 
 pub const TEMPLATE: &str = "[backup]\nrules = []\n\n[restore]\npresets = []\n";
 
+pub fn init_drive(drive: &Path) -> Result<()> {
+    crate::volume::check_mounted(drive)?;
+    let path = drive.join(FILE_NAME);
+    if path.exists() {
+        crate::ui::ok(format!("{} already exists", path.display()));
+    } else {
+        std::fs::write(&path, TEMPLATE)?;
+        crate::ui::ok(format!(
+            "{} is ready for backups; your own backup rules and restore presets go in {}",
+            drive.display(),
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[path = "config_tests.rs"]
 mod tests;

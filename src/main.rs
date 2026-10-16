@@ -5,6 +5,7 @@ mod env;
 mod errors;
 mod guard;
 mod machines;
+mod menu;
 mod nix;
 mod packages;
 mod photos;
@@ -187,9 +188,9 @@ fn main() {
     ui::install_interrupt_handler();
     let cli = Cli::parse();
     let result = match cli.command {
-        Some(Command::Init { drive }) => init(&drive),
+        Some(Command::Init { drive }) => config::init_drive(&drive),
         command => Env::load().and_then(|e| match command {
-            None => menu(&e),
+            None => menu::run(e),
             Some(command) => dispatch(&e, command),
         }),
     };
@@ -252,92 +253,10 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
         Command::Remove { kind, names } => packages::remove(e, &names, kind.forced()),
         Command::Edit { section } => nix::edit(e, section),
         Command::Photos { test_icloud } => photos::report(e, test_icloud),
-        Command::Init { drive } => init(&drive),
+        Command::Init { drive } => config::init_drive(&drive),
         Command::Status => {
             status::show(e);
             Ok(())
         }
     }
-}
-
-#[derive(Clone, Copy)]
-enum Action {
-    Setup,
-    Backup,
-    Restore,
-    Apply,
-    Update,
-    Add,
-    Edit,
-    Quit,
-}
-
-fn menu(e: &Env) -> Result<()> {
-    if !ui::interactive() {
-        use clap::CommandFactory;
-        Cli::command().print_help()?;
-        return Ok(());
-    }
-    loop {
-        println!();
-        status::show(e);
-        println!();
-        let mut options = vec![
-            ("Back up this Mac".to_string(), Action::Backup),
-            (
-                "Restore files and folders from the backup".to_string(),
-                Action::Restore,
-            ),
-            ("Set up this Mac from the backup".to_string(), Action::Setup),
-        ];
-        if e.nix_enabled() {
-            options.extend([
-                (
-                    "Install / apply the system configuration".to_string(),
-                    Action::Apply,
-                ),
-                ("Update all packages".to_string(), Action::Update),
-                ("Add a command-line tool or app".to_string(), Action::Add),
-                ("Edit the configuration".to_string(), Action::Edit),
-            ]);
-        }
-        options.push(("Quit".to_string(), Action::Quit));
-        let action = match ui::select("What do you want to do?", &options) {
-            Ok(Action::Quit) | Err(_) => return Ok(()),
-            Ok(action) => action,
-        };
-        errors::report(match action {
-            Action::Setup => setup::run(e),
-            Action::Backup => backup::menu(e),
-            Action::Restore => restore::menu(e),
-            Action::Apply => nix::apply(e, false, false),
-            Action::Update => nix::apply(e, true, false),
-            Action::Add => add_menu(e),
-            Action::Edit => nix::edit(e, None),
-            Action::Quit => Ok(()),
-        });
-    }
-}
-
-fn add_menu(e: &Env) -> Result<()> {
-    let name = ui::input("Name of the tool or app (e.g. htop or firefox)")?;
-    if name.trim().is_empty() {
-        return Err(errors::cancelled());
-    }
-    packages::add(e, &[name.trim().to_string()], None)
-}
-
-fn init(drive: &std::path::Path) -> Result<()> {
-    volume::check_mounted(drive)?;
-    let path = drive.join(config::FILE_NAME);
-    if path.exists() {
-        ui::ok(format!("{} already exists", path.display()));
-    } else {
-        std::fs::write(&path, config::TEMPLATE)?;
-        ui::ok(format!(
-            "created {}; add your own backup rules and restore presets there (see the README)",
-            path.display()
-        ));
-    }
-    Ok(())
 }

@@ -31,6 +31,41 @@ pub fn free_space(path: &Path) -> Result<(u64, u64)> {
     Ok((st.f_bavail * bsize, st.f_blocks * bsize))
 }
 
+pub fn unprepared_drives(volumes: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(volumes) else {
+        return Vec::new();
+    };
+    let mut drives: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|ft| ft.is_dir()))
+        .map(|entry| entry.path())
+        .filter(|p| !p.join(crate::config::FILE_NAME).exists())
+        .filter(|p| check_mounted(p).is_ok() && writable_and_browsable(p))
+        .filter(|p| !is_installer(p))
+        .collect();
+    drives.sort();
+    drives
+}
+
+fn writable_and_browsable(path: &Path) -> bool {
+    let Ok(c) = cstr(path) else { return false };
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
+        return false;
+    }
+    let hidden = (libc::MNT_RDONLY | libc::MNT_DONTBROWSE) as u32;
+    st.f_flags & hidden == 0
+}
+
+fn is_installer(path: &Path) -> bool {
+    std::fs::read_dir(path).is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with("Install macOS") && name.ends_with(".app")
+        })
+    })
+}
+
 pub fn disk_usage(path: &Path) -> Option<u64> {
     let out = std::process::Command::new("du")
         .arg("-sk")

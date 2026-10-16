@@ -1,6 +1,8 @@
 # macup
 
-One interactive tool for backing up, restoring and rebuilding this Apple Silicon Mac, written in Rust. It drives rsync for files, Nix (nix-darwin + Home Manager) for the system, and Apple's PhotoKit for originals that only exist in iCloud. Run `macup` without arguments for a menu.
+One interactive tool for backing up, restoring and rebuilding this Apple Silicon Mac, written in Rust. It drives rsync for files, Nix (nix-darwin + Home Manager) for the system, and Apple's PhotoKit for originals that only exist in iCloud.
+
+Run `macup` without arguments for a menu that starts with what this Mac most likely needs: setting up a freshly installed Mac from the backup, restoring before its first backup, a backup once the last one is a day old, or using a newly connected drive for backups. "Back up this Mac" in the menu just backs up; "Clean up the backup" is `macup backup --mirror`.
 
 The binary lives in the root of the backup drive (`/Volumes/Backup/macup`) so it works on a freshly reinstalled Mac, and in `~/.local/bin` once built here.
 

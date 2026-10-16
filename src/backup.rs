@@ -4,7 +4,7 @@ use crate::guard::{Check, Guard, precomputed, resolve};
 use crate::photos::{self, PhotoLibrary};
 use crate::rsync::{Job, dir_arg, dry_run, find_rsync, log_path, rsync_args};
 use crate::rules::write_rules_file;
-use crate::ui::{human_bytes, plural, report_result, run_job, select, warn, with_spinner};
+use crate::ui::{human_bytes, plural, report_result, run_job, warn, with_spinner};
 use crate::volume::{Lock, free_space, nearly_full};
 use anyhow::{Result, bail};
 
@@ -17,31 +17,6 @@ pub struct Options {
     pub photos_only: bool,
     pub fetch_icloud: bool,
     pub excludes: Vec<String>,
-}
-
-pub fn menu(e: &Env) -> Result<()> {
-    let mirror = select(
-        "How should the backup treat files you deleted on this Mac?",
-        &[
-            ("Keep them in the backup (safe, recommended)".into(), false),
-            ("Delete them from the backup too (mirror)".into(), true),
-        ],
-    )?;
-    let dry_run = select(
-        "Preview first?",
-        &[
-            ("Back up for real".into(), false),
-            ("Preview only (dry run)".into(), true),
-        ],
-    )?;
-    run(
-        e,
-        &Options {
-            dry_run,
-            mirror,
-            ..Options::default()
-        },
-    )
 }
 
 pub fn backup_args(e: &Env, o: &Options, rules: &str) -> Vec<String> {
