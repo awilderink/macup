@@ -115,7 +115,7 @@ enum Command {
     Setup,
     #[command(
         visible_alias = "install",
-        about = "Install whatever is missing (Command Line Tools, Nix, config) and apply the system configuration"
+        about = "Install your tools and apps and apply your settings (installs Command Line Tools and Nix first when missing)"
     )]
     Apply {
         #[arg(long, help = "update all tools to their latest versions first")]
@@ -132,6 +132,11 @@ enum Command {
     Add {
         #[command(flatten)]
         kind: KindFlags,
+        #[arg(
+            required = true,
+            value_name = "NAME",
+            help = "tools or apps, e.g. ripgrep firefox"
+        )]
         names: Vec<String>,
     },
     #[command(
@@ -141,10 +146,21 @@ enum Command {
     Remove {
         #[command(flatten)]
         kind: KindFlags,
+        #[arg(
+            required = true,
+            value_name = "NAME",
+            help = "tools or apps, e.g. ripgrep firefox"
+        )]
         names: Vec<String>,
     },
-    #[command(about = "Open the Nix config in your editor: packages, apps or system")]
-    Edit { section: Option<String> },
+    #[command(about = "Edit your config by hand in your editor, then offer to apply it")]
+    Edit {
+        #[arg(
+            value_parser = ["packages", "apps", "system"],
+            help = "packages: command-line tools (home.nix); apps: Homebrew apps (flake.nix); system: macOS and Nix settings (darwin.nix). Asks when left out."
+        )]
+        section: Option<String>,
+    },
     #[command(about = "Drive, last backup, Photos, and tools and apps at a glance")]
     Status {
         #[arg(

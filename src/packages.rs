@@ -341,15 +341,7 @@ pub fn counts(dir: &Path) -> Option<(usize, usize)> {
     Some((count(&PACKAGES) + count(&BREWS), count(&CASKS)))
 }
 
-fn require_names(names: &[String], verb: &str) -> Result<()> {
-    if names.is_empty() {
-        bail!("usage: macup {verb} <name>...");
-    }
-    Ok(())
-}
-
 pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
-    require_names(names, "add")?;
     ensure_config(e)?;
     let mut ws = Workspace::open(&e.nix_dir())?;
     let (mut tools, mut apps) = (Vec::new(), Vec::new());
@@ -393,7 +385,6 @@ pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
 }
 
 pub fn remove(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
-    require_names(names, "remove")?;
     ensure_config(e)?;
     let mut ws = Workspace::open(&e.nix_dir())?;
     let specs: &[&ListSpec] = match forced {
