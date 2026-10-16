@@ -104,3 +104,17 @@ fn real_config_is_editable() {
         assert_eq!(back, src, "{file}: add then remove did not round-trip");
     }
 }
+
+// A file that does not parse must say so; otherwise the user gets a
+// misleading "could not find the list" message.
+#[test]
+fn a_file_that_does_not_parse_is_an_error() {
+    let err = edit_list(
+        "{ home.packages = with pkgs; [ bat ",
+        &PACKAGES,
+        &names(&["jq"]),
+        true,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("cannot parse"), "{err}");
+}

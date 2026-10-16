@@ -111,10 +111,12 @@ pub struct Request {
     pub from: Option<String>,
 }
 
-pub fn run(e: &Env, mut req: Request) -> Result<()> {
-    crate::volume::check_mounted(&e.volume)?;
-    crate::machines::migrate_legacy(e)?;
-    let e = &crate::machines::source(e, req.from.as_deref())?;
+pub fn run(e: &Env, req: Request) -> Result<()> {
+    let src = crate::machines::open(e, req.from.as_deref(), !req.dry_run)?;
+    run_from(&src, req)
+}
+
+fn run_from(e: &Env, mut req: Request) -> Result<()> {
     if req.photos {
         return photos::restore_photos(e, &req.target.join("Pictures"));
     }
@@ -160,20 +162,9 @@ pub fn require_backup(e: &Env) -> Result<()> {
 }
 
 pub fn menu(e: &Env) -> Result<()> {
-    crate::volume::check_mounted(&e.volume)?;
-    crate::machines::migrate_legacy(e)?;
-    let src = crate::machines::source(e, None)?;
-    let req = Request {
-        paths: vec![],
-        target: e.home.clone(),
-        mode: None,
-        dry_run: false,
-        yes: false,
-        photos: false,
-        from: Some(src.machine.clone()),
-    };
-    if !photos::libraries_in(&src.photos_dir()).is_empty() {
-        let photos = select(
+    let src = crate::machines::open(e, None, true)?;
+    let photos = !photos::libraries_in(&src.photos_dir()).is_empty()
+        && select(
             "What do you want to restore?",
             &[
                 (
@@ -183,9 +174,18 @@ pub fn menu(e: &Env) -> Result<()> {
                 ("The Photos library".into(), true),
             ],
         )?;
-        return run(e, Request { photos, ..req });
-    }
-    run(e, req)
+    run_from(
+        &src,
+        Request {
+            paths: vec![],
+            target: e.home.clone(),
+            mode: None,
+            dry_run: false,
+            yes: false,
+            photos,
+            from: None,
+        },
+    )
 }
 
 pub fn restore_paths(

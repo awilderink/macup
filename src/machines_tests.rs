@@ -47,3 +47,16 @@ fn several_other_macs_need_a_choice() {
     }
     assert!(source(&e, None).is_err());
 }
+
+// A dry run promises to touch nothing, so it must not move an old-layout
+// drive; it explains instead, and a real run does the move.
+#[test]
+fn dry_runs_never_migrate() {
+    let (_dir, e) = fixture_env();
+    fs::create_dir_all(e.volume.join("home/Documents")).unwrap();
+    assert!(prepare(&e, false).is_err());
+    assert!(
+        e.volume.join("home/Documents").exists(),
+        "a dry run moved the backup"
+    );
+}

@@ -1,40 +1,73 @@
 use crate::config::{self, Config};
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Nix {
+    On,
+    OffByConfig,
+    Absent,
+}
 
 #[derive(Clone, Debug)]
 pub struct Env {
     pub home: PathBuf,
     pub volume: PathBuf,
     pub machine: String,
-    pub config: Arc<Config>,
+    pub config: Config,
+    pub nix: Nix,
 }
 
 impl Env {
     pub fn load() -> Result<Env> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        let volume = match std::env::var_os("MACUP_VOLUME").filter(|v| !v.is_empty()) {
-            Some(v) => PathBuf::from(v),
+        let volume = match env_path("MACUP_VOLUME") {
+            Some(v) => v,
             None => detect_drive(Path::new("/Volumes"))?,
         };
-        Ok(Env {
-            home: env_or("MACUP_HOME", home),
-            config: Arc::new(Config::load(&volume)?),
-            machine: env_string("MACUP_MACHINE", &this_mac_name()),
+        let home = env_path("MACUP_HOME")
+            .or_else(|| env_path("HOME"))
+            .unwrap_or_default();
+        let machine = std::env::var("MACUP_MACHINE")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(this_mac_name);
+        let config = Config::load(&volume)?;
+        Ok(Env::assemble(home, volume, machine, config))
+    }
+
+    fn assemble(home: PathBuf, volume: PathBuf, machine: String, config: Config) -> Env {
+        let mut e = Env {
+            home,
             volume,
-        })
+            machine,
+            config,
+            nix: Nix::Absent,
+        };
+        e.nix = e.detect_nix();
+        e
     }
 
     #[cfg(test)]
     pub fn new(home: PathBuf, volume: PathBuf) -> Env {
-        Env {
-            home,
-            volume,
-            machine: "test-mac".into(),
-            config: Arc::default(),
+        Env::assemble(home, volume, "test-mac".into(), Config::default())
+    }
+
+    #[cfg(test)]
+    pub fn with_config(self, config: Config) -> Env {
+        Env::assemble(self.home, self.volume, self.machine, config)
+    }
+
+    fn detect_nix(&self) -> Nix {
+        match self.config.nix.enabled {
+            Some(false) => Nix::OffByConfig,
+            Some(true) => Nix::On,
+            None if self.has_nix_config()
+                || has_flake(&self.drive_nix_dir())
+                || crate::nix::find_nix().is_some() =>
+            {
+                Nix::On
+            }
+            None => Nix::Absent,
         }
     }
 
@@ -87,11 +120,7 @@ impl Env {
     }
 
     pub fn nix_enabled(&self) -> bool {
-        self.config.nix.enabled.unwrap_or_else(|| {
-            self.has_nix_config()
-                || has_flake(&self.drive_nix_dir())
-                || crate::nix::find_nix().is_some()
-        })
+        self.nix == Nix::On
     }
 
     pub fn log_dir(&self) -> PathBuf {
@@ -112,18 +141,14 @@ impl Env {
 }
 
 pub fn this_mac_name() -> String {
-    let name = std::process::Command::new("scutil")
+    std::process::Command::new("scutil")
         .args(["--get", "LocalHostName"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if name.is_empty() {
-        "this-mac".into()
-    } else {
-        name
-    }
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "this-mac".into())
 }
 
 pub fn detect_drive(volumes: &Path) -> Result<PathBuf> {
@@ -151,11 +176,10 @@ pub fn detect_drive(volumes: &Path) -> Result<PathBuf> {
     }
 }
 
-pub fn env_or(key: &str, fallback: PathBuf) -> PathBuf {
-    match std::env::var_os(key) {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => fallback,
-    }
+fn env_path(key: &str) -> Option<PathBuf> {
+    std::env::var_os(key)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 pub fn env_string(key: &str, fallback: &str) -> String {

@@ -159,15 +159,26 @@ enum Command {
 fn main() {
     ui::install_interrupt_handler();
     let cli = Cli::parse();
-    let result = Env::load().and_then(|e| match cli.command {
-        None => menu(&e),
-        Some(command) => dispatch(&e, command),
-    });
+    let result = match cli.command {
+        Some(Command::Init { drive }) => init(&drive),
+        command => Env::load().and_then(|e| match command {
+            None => menu(&e),
+            Some(command) => dispatch(&e, command),
+        }),
+    };
     std::process::exit(errors::report(result));
 }
 
 fn dispatch(e: &Env, command: Command) -> Result<()> {
     match command {
+        Command::Apply { .. }
+        | Command::Add { .. }
+        | Command::Remove { .. }
+        | Command::Edit { .. }
+            if !e.nix_enabled() =>
+        {
+            nix::require_nix(e)
+        }
         Command::Backup {
             dry_run,
             mirror,

@@ -1,8 +1,8 @@
 use crate::env::Env;
-use crate::errors::cancelled;
 use crate::ui::{interactive, note, ok, select};
-use crate::volume::Lock;
+use crate::volume::{Lock, check_mounted};
 use anyhow::{Result, bail};
+use std::path::PathBuf;
 
 pub fn backed_up_macs(e: &Env) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(e.macs_dir()) else {
@@ -18,20 +18,26 @@ pub fn backed_up_macs(e: &Env) -> Vec<String> {
     names
 }
 
-pub fn has_legacy_layout(e: &Env) -> bool {
-    e.volume.join("home").is_dir() || e.volume.join("photos").is_dir()
+fn legacy_moves(e: &Env) -> Vec<(PathBuf, PathBuf)> {
+    [
+        (e.volume.join("home"), e.backup_home()),
+        (e.volume.join("photos"), e.photos_dir()),
+    ]
+    .into_iter()
+    .filter(|(from, _)| from.is_dir())
+    .collect()
 }
 
-pub fn migrate_legacy(e: &Env) -> Result<()> {
-    if !has_legacy_layout(e) {
+pub fn has_legacy_layout(e: &Env) -> bool {
+    !legacy_moves(e).is_empty()
+}
+
+fn migrate_legacy(e: &Env) -> Result<()> {
+    let moves = legacy_moves(e);
+    if moves.is_empty() {
         return Ok(());
     }
     let _lock = Lock::acquire(&e.lock_dir())?;
-    let moves: Vec<_> = ["home", "photos"]
-        .into_iter()
-        .map(|name| (e.volume.join(name), e.machine_dir().join(name)))
-        .filter(|(from, _)| from.is_dir())
-        .collect();
     if let Some((from, to)) = moves.iter().find(|(_, to)| to.exists()) {
         bail!(
             "the drive has both the old layout ({}) and the new one ({}); move one of them aside by hand",
@@ -48,6 +54,24 @@ pub fn migrate_legacy(e: &Env) -> Result<()> {
         e.machine_dir().display()
     ));
     Ok(())
+}
+
+pub fn prepare(e: &Env, migrate: bool) -> Result<()> {
+    check_mounted(&e.volume)?;
+    if migrate {
+        migrate_legacy(e)
+    } else if has_legacy_layout(e) {
+        bail!(
+            "this drive still uses the old single-Mac layout; a real backup or restore moves it into macs/ first"
+        )
+    } else {
+        Ok(())
+    }
+}
+
+pub fn open(e: &Env, from: Option<&str>, migrate: bool) -> Result<Env> {
+    prepare(e, migrate)?;
+    source(e, from)
 }
 
 pub fn source(e: &Env, from: Option<&str>) -> Result<Env> {
@@ -76,7 +100,7 @@ pub fn source(e: &Env, from: Option<&str>) -> Result<Env> {
         _ if interactive() => {
             let options: Vec<(String, String)> =
                 macs.iter().map(|m| (m.clone(), m.clone())).collect();
-            let chosen = select("Restore from which Mac?", &options).map_err(|_| cancelled())?;
+            let chosen = select("Restore from which Mac?", &options)?;
             Ok(e.for_machine(&chosen))
         }
         _ => bail!(

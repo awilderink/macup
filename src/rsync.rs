@@ -25,8 +25,16 @@ pub fn dir_arg(path: &Path) -> String {
     format!("{}/", path.display().to_string().trim_end_matches('/'))
 }
 
-const NO_RSYNC: &str = "GNU rsync not found — run `macup apply` first so it can be fetched through Nix (macOS's built-in openrsync is not reliable enough for this)";
-const NO_RSYNC_BREW: &str = "GNU rsync not found — install it with `brew install rsync` (macOS's built-in openrsync is not reliable enough for this)";
+fn no_rsync(e: &Env) -> anyhow::Error {
+    let hint = if e.nix_enabled() {
+        "run `macup apply` first so it can be fetched through Nix"
+    } else {
+        "install it with `brew install rsync`"
+    };
+    anyhow!(
+        "GNU rsync not found — {hint} (macOS's built-in openrsync is not reliable enough for this)"
+    )
+}
 
 static RSYNC: Mutex<Option<String>> = Mutex::new(None);
 
@@ -58,10 +66,9 @@ fn locate_rsync(e: &Env) -> Result<String> {
     if let Some(bin) = candidates.iter().find(|c| is_gnu_rsync(c)) {
         return Ok(bin.display().to_string());
     }
-    if !e.nix_enabled() {
-        bail!(NO_RSYNC_BREW);
-    }
-    let nix = crate::nix::find_nix().ok_or_else(|| anyhow!(NO_RSYNC))?;
+    let nix = crate::nix::find_nix()
+        .filter(|_| e.nix_enabled())
+        .ok_or_else(|| no_rsync(e))?;
     let mut args = vec!["build", "nixpkgs#rsync", "--no-link", "--print-out-paths"];
     let nix_dir = e.nix_dir().display().to_string();
     if e.has_nix_config() {
@@ -80,10 +87,10 @@ fn locate_rsync(e: &Env) -> Result<String> {
     let store = stdout
         .split_whitespace()
         .last()
-        .ok_or_else(|| anyhow!(NO_RSYNC))?;
+        .ok_or_else(|| no_rsync(e))?;
     let bin = Path::new(store).join("bin/rsync");
     if !is_gnu_rsync(&bin) {
-        bail!(NO_RSYNC);
+        return Err(no_rsync(e));
     }
     Ok(bin.display().to_string())
 }

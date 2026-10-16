@@ -4,7 +4,7 @@ use std::path::Path;
 
 pub const FILE_NAME: &str = "macup.toml";
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub backup: BackupConfig,
@@ -12,28 +12,28 @@ pub struct Config {
     pub nix: NixConfig,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NixConfig {
     pub enabled: Option<bool>,
     pub config: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BackupConfig {
     pub rules: Vec<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RestoreConfig {
-    pub presets: Vec<PresetConfig>,
+    pub presets: Vec<Preset>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PresetConfig {
+pub struct Preset {
     pub name: String,
     pub paths: Vec<String>,
 }

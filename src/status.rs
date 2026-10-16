@@ -1,5 +1,5 @@
 use crate::access::{full_disk_access, terminal_name};
-use crate::env::Env;
+use crate::env::{Env, Nix};
 use crate::nix::{config_in_sync, find_nix, nix_version};
 use crate::ui::{human_bytes, title, warning};
 use crate::volume::{check_mounted, free_space, nearly_full};
@@ -21,10 +21,6 @@ pub fn show(e: &Env) {
             }
         }
         row("Backup drive", v);
-    } else {
-        row("Backup drive", warning("not connected").to_string());
-    }
-    if mounted {
         let others: Vec<String> = crate::machines::backed_up_macs(e)
             .into_iter()
             .filter(|m| *m != e.machine)
@@ -42,6 +38,8 @@ pub fn show(e: &Env) {
             );
         }
         row("This Mac", v);
+    } else {
+        row("Backup drive", warning("not connected").to_string());
     }
     row("Last backup", crate::backup::last_backup(e));
     row("Photos", crate::photos::last_photo_backup(e));
@@ -57,9 +55,15 @@ pub fn show(e: &Env) {
             .to_string(),
         },
     );
-    if !e.nix_enabled() {
-        row("Nix", "off for this drive (macup.toml)".into());
-        return;
+    match e.nix {
+        Nix::On => {}
+        Nix::OffByConfig => return row("Nix", "off for this drive (macup.toml)".into()),
+        Nix::Absent => {
+            return row(
+                "Nix",
+                "not used (not installed, no nix-darwin config)".into(),
+            );
+        }
     }
     row(
         "Nix",

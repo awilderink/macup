@@ -930,6 +930,7 @@ dependencies = [
  "ratatui",
  "regex",
  "rnix",
+ "rowan",
  "rusqlite",
  "serde",
  "serde_json",

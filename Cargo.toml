@@ -20,6 +20,7 @@ objc2-photos = { version = "0.3", features = ["PHAsset", "PHAssetResource", "PHA
 ratatui = "0.30"
 regex = "1"
 rnix = "0.14.0"
+rowan = "0.16"
 rusqlite = "0.40"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"

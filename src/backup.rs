@@ -5,7 +5,7 @@ use crate::photos::{self, PhotoLibrary};
 use crate::rsync::{Job, dir_arg, dry_run, find_rsync, log_path, rsync_args};
 use crate::rules::write_rules_file;
 use crate::ui::{human_bytes, plural, report_result, run_job, select, warn, with_spinner};
-use crate::volume::{Lock, check_mounted, free_space, nearly_full};
+use crate::volume::{Lock, free_space, nearly_full};
 use anyhow::{Result, bail};
 
 #[derive(Debug, Default, Clone)]
@@ -108,8 +108,7 @@ pub fn mirror_guard(e: &Env, o: &Options, bin: &str, rules: &str) -> Result<Opti
 }
 
 pub fn run(e: &Env, o: &Options) -> Result<()> {
-    check_mounted(&e.volume)?;
-    crate::machines::migrate_legacy(e)?;
+    crate::machines::prepare(e, !o.dry_run)?;
     if o.no_photos && o.photos_only {
         bail!("--no-photos and --photos-only cannot be combined");
     }

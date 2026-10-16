@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, Preset};
 use crate::errors::cancelled;
 use crate::selection::{CheckState, Selection, existing_paths, join_rel};
 use crate::sizer::Sizer;
@@ -12,12 +12,6 @@ use ratatui::widgets::Paragraph;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-
-#[derive(Debug, Clone)]
-pub struct Preset {
-    pub name: String,
-    pub paths: Vec<String>,
-}
 
 fn preset(name: &str, paths: &[&str]) -> Preset {
     Preset {
@@ -39,10 +33,7 @@ pub fn presets(config: &Config) -> Vec<Preset> {
         preset("SSH keys and config", &[".ssh"]),
         preset("Nix config", &[".config/nix-darwin"]),
     ];
-    all.extend(config.restore.presets.iter().map(|p| Preset {
-        name: p.name.clone(),
-        paths: p.paths.clone(),
-    }));
+    all.extend(config.restore.presets.iter().cloned());
     all
 }
 

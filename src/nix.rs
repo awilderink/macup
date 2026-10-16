@@ -1,4 +1,4 @@
-use crate::env::{Env, has_flake};
+use crate::env::{Env, Nix, has_flake};
 use crate::picker::shell_preset;
 use crate::selection::existing_paths;
 use crate::ui::{confirm, interactive, note, ok, select, step, warn};
@@ -9,12 +9,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn require_nix(e: &Env) -> Result<()> {
-    if !e.nix_enabled() {
-        bail!(
+    match e.nix {
+        Nix::On => Ok(()),
+        Nix::OffByConfig => bail!(
             "Nix is turned off for this drive ([nix] enabled = false in macup.toml); macup only backs up and restores here"
-        );
+        ),
+        Nix::Absent => bail!(
+            "there is no Nix here: Nix is not installed and there is no nix-darwin config in {} or on the backup drive",
+            e.nix_dir().display()
+        ),
     }
-    Ok(())
 }
 
 pub fn find_nix() -> Option<PathBuf> {
@@ -90,11 +94,7 @@ pub fn flake_host(e: &Env, nix: &Path) -> Result<String> {
     if let [only] = names.as_slice() {
         return Ok(only.clone());
     }
-    let local = Command::new("scutil")
-        .args(["--get", "LocalHostName"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+    let local = crate::env::this_mac_name();
     if names.contains(&local) {
         return Ok(local);
     }
@@ -105,7 +105,6 @@ pub fn flake_host(e: &Env, nix: &Path) -> Result<String> {
 }
 
 pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
-    require_nix(e)?;
     if std::env::consts::ARCH != "aarch64" {
         bail!(
             "this configuration targets Apple Silicon; update flake.nix before using it on Intel"
@@ -280,10 +279,7 @@ fn offer_shell_restore(e: &Env) -> Result<()> {
     if e.home.join(".oh-my-zsh").exists() {
         return Ok(());
     }
-    if check_mounted(&e.volume).is_err() || crate::machines::migrate_legacy(e).is_err() {
-        return Ok(());
-    }
-    let Ok(src) = crate::machines::source(e, None) else {
+    let Ok(src) = crate::machines::open(e, None, false) else {
         return Ok(());
     };
     let paths = existing_paths(&src.backup_home(), &shell_preset().paths);
@@ -310,7 +306,6 @@ fn offer_shell_restore(e: &Env) -> Result<()> {
 }
 
 pub fn edit(e: &Env, section: Option<String>) -> Result<()> {
-    require_nix(e)?;
     let section = match section {
         Some(s) => s,
         None if interactive() => select(
