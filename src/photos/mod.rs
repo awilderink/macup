@@ -379,23 +379,28 @@ pub fn last_photo_backup(e: &Env) -> String {
     if libs.is_empty() {
         return "no library on this Mac".into();
     }
+    let named = libs.len() > 1;
     let mut parts: Vec<String> = libs
         .iter()
-        .map(
-            |l| match std::fs::metadata(library::db_path(&l.dst)).and_then(|m| m.modified()) {
+        .map(|l| {
+            let label = if named {
+                format!("{}: ", l.name.trim_end_matches(".photoslibrary"))
+            } else {
+                String::new()
+            };
+            match std::fs::metadata(library::db_path(&l.dst)).and_then(|m| m.modified()) {
                 Ok(t) => format!(
-                    "{}: {}",
-                    l.name,
+                    "{label}backed up {}",
                     chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M")
                 ),
-                Err(_) => format!("{}: never", l.name),
-            },
-        )
+                Err(_) => format!("{label}not backed up yet"),
+            }
+        })
         .collect();
     if let Ok(manifest) = archive::load_manifest(&e.archive_dir())
         && !manifest.is_empty()
     {
-        parts.push(format!("archive: {} originals", manifest.len()));
+        parts.push(format!("{} originals kept on the drive", manifest.len()));
     }
     let only_icloud: usize = libs
         .iter()

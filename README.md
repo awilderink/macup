@@ -58,7 +58,7 @@ With "Optimize Mac Storage" on, a photo whose original was never downloaded to t
 | Task | Command |
 | --- | --- |
 | Back up the home folder | `macup backup` (`-n` previews, `--mirror` also removes files you deleted and shows how many first). The first backup from a Mac whose drive already holds a backup asks before overwriting it, so restore first. |
-| Restore specific paths without the picker | `macup restore --path .ssh --path Documents/taxes` |
+| Restore specific paths without the picker | `macup restore --path .ssh --path Documents/taxes` (keeps files that are newer on this Mac; `--replace` takes the backup's version anyway, `--skip-existing` only adds missing files) |
 | Add a command-line tool or a Mac app | `macup add htop firefox` |
 | Remove one (and offer to uninstall Homebrew apps) | `macup remove firefox` |
 | Edit the Nix config by hand | `macup edit` |

@@ -50,7 +50,7 @@ enum Command {
         #[arg(
             long,
             value_name = "PATTERN",
-            help = "extra rsync pattern to skip (repeatable)"
+            help = "skip files matching this pattern, e.g. '*.iso' or 'Movies/' (repeatable)"
         )]
         exclude: Vec<String>,
         #[arg(long, conflicts_with = "photos_only", help = "skip the Photos library")]
@@ -84,10 +84,15 @@ enum Command {
         target: Option<PathBuf>,
         #[arg(
             long,
-            value_name = "MODE",
-            help = "when a file already exists: update (keep newer local files), missing (never touch existing files), overwrite"
+            conflicts_with = "skip_existing",
+            help = "replace files on this Mac with the backup's version, even newer ones"
         )]
-        mode: Option<String>,
+        replace: bool,
+        #[arg(
+            long,
+            help = "only add files missing on this Mac; never touch existing ones"
+        )]
+        skip_existing: bool,
         #[arg(short = 'n', long, help = "only show what would be restored")]
         dry_run: bool,
         #[arg(long, help = "do not ask for confirmation")]
@@ -113,14 +118,11 @@ enum Command {
         about = "Install whatever is missing (Command Line Tools, Nix, config) and apply the system configuration"
     )]
     Apply {
-        #[arg(
-            long,
-            help = "update all pinned packages to their latest versions first"
-        )]
+        #[arg(long, help = "update all tools to their latest versions first")]
         update: bool,
         #[arg(
             long,
-            help = "only build the configuration to check it, without switching to it"
+            help = "only check that the configuration builds; changes nothing"
         )]
         check: bool,
     },
@@ -143,7 +145,7 @@ enum Command {
     },
     #[command(about = "Open the Nix config in your editor: packages, apps or system")]
     Edit { section: Option<String> },
-    #[command(about = "Drive, last backup, Photos, Nix and config at a glance")]
+    #[command(about = "Drive, last backup, Photos, and tools and apps at a glance")]
     Status,
     #[command(about = "Set up a drive for macup by creating macup.toml on it")]
     Init {
@@ -230,7 +232,8 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
         Command::Restore {
             paths,
             target,
-            mode,
+            replace,
+            skip_existing,
             dry_run,
             yes,
             photos,
@@ -240,7 +243,11 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
             restore::Request {
                 paths,
                 target: target.unwrap_or_else(|| e.home.clone()),
-                mode: mode.as_deref().map(restore::Mode::parse).transpose()?,
+                mode: match (replace, skip_existing) {
+                    (true, _) => Some(restore::Mode::Overwrite),
+                    (_, true) => Some(restore::Mode::OnlyMissing),
+                    _ => None,
+                },
                 dry_run,
                 yes,
                 photos,

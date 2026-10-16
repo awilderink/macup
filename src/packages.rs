@@ -329,6 +329,18 @@ impl Workspace {
     }
 }
 
+pub fn counts(dir: &Path) -> Option<(usize, usize)> {
+    let ws = Workspace::open(dir).ok()?;
+    let count = |spec: &ListSpec| {
+        ws.find(spec)
+            .ok()
+            .flatten()
+            .and_then(|i| locate(&ws.files[i].1, spec).ok().flatten())
+            .map_or(0, |list| list.items().count())
+    };
+    Some((count(&PACKAGES) + count(&BREWS), count(&CASKS)))
+}
+
 fn require_names(names: &[String], verb: &str) -> Result<()> {
     if names.is_empty() {
         bail!("usage: macup {verb} <name>...");

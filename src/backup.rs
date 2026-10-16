@@ -186,10 +186,10 @@ pub fn last_backup(e: &Env) -> String {
     }
     match std::fs::metadata(e.backup_home()).and_then(|m| m.modified()) {
         Ok(t) => format!(
-            "never from this Mac (backup folder last changed {})",
+            "none from this Mac yet (the drive's copy last changed {})",
             chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M")
         ),
-        Err(_) => "none".into(),
+        Err(_) => "none yet".into(),
     }
 }
 

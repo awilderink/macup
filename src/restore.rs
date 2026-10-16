@@ -23,15 +23,6 @@ pub enum Mode {
 }
 
 impl Mode {
-    pub fn parse(s: &str) -> Result<Mode> {
-        match s {
-            "update" => Ok(Mode::KeepNewer),
-            "missing" => Ok(Mode::OnlyMissing),
-            "overwrite" => Ok(Mode::Overwrite),
-            other => bail!("unknown --mode {other:?}"),
-        }
-    }
-
     fn flag(self) -> Option<&'static str> {
         match self {
             Mode::KeepNewer => Some("--update"),
@@ -222,7 +213,9 @@ pub fn restore_paths(
         return Ok(());
     }
     let mode = match mode {
-        Some(m) => {
+        None if plan.changed > 0 => choose_mode(&plan)?,
+        m => {
+            let m = m.unwrap_or(Mode::KeepNewer);
             if !yes {
                 confirm_or_cancel(
                     &format!(
@@ -235,7 +228,6 @@ pub fn restore_paths(
             }
             m
         }
-        None => choose_mode(&plan)?,
     };
     if mode == Mode::Overwrite && plan.newer_here > 0 && !yes {
         confirm_or_cancel(
@@ -334,7 +326,7 @@ fn print_plan(p: &Plan) {
     ));
     if p.newer_here > 0 {
         warn(format!(
-            "{} newer on this Mac and kept unless you choose overwrite:",
+            "{} newer on this Mac and kept unless you choose to replace them:",
             plural(p.newer_here, "file is", "files are")
         ));
         for s in &p.newer_samples {

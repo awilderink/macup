@@ -1,15 +1,16 @@
 use crate::access::{full_disk_access, terminal_name};
 use crate::env::{Env, Nix};
-use crate::nix::{config_in_sync, find_nix, nix_version};
-use crate::ui::{human_bytes, title, warning};
+use crate::nix::{config_in_sync, find_nix};
+use crate::ui::{human_bytes, plural, title, warning};
 use crate::volume::{check_mounted, free_space, nearly_full};
+use std::path::Path;
 
 pub fn show(e: &Env) {
     let row = |label: &str, value: String| println!("{} {value}", title(format!("{label:<14}")));
     println!("{}", title("macup status"));
     let mounted = check_mounted(&e.volume).is_ok();
     if mounted {
-        let mut v = format!("{} · connected", e.volume.display());
+        let mut v = e.volume.display().to_string();
         if let Ok((free, total)) = free_space(&e.volume) {
             v.push_str(&format!(
                 " · {} free of {}",
@@ -55,46 +56,42 @@ pub fn show(e: &Env) {
             .to_string(),
         },
     );
-    match e.nix {
-        Nix::On => {}
-        Nix::OffByConfig => return row("Nix", "off for this drive (macup.toml)".into()),
-        Nix::Absent => {
-            return row(
-                "Nix",
-                "not used (not installed, no nix-darwin config)".into(),
+    row(
+        "Tools & apps",
+        match e.nix {
+            Nix::On => tools_and_apps(e, mounted),
+            Nix::OffByConfig => "not managed by macup (Nix is off in macup.toml)".into(),
+            Nix::Absent => "not managed by macup (no Nix config here or on the drive)".into(),
+        },
+    );
+}
+
+fn tools_and_apps(e: &Env, mounted: bool) -> String {
+    if !e.has_nix_config() {
+        return warning("not set up yet — run macup setup").to_string();
+    }
+    let mut v = match crate::packages::counts(&e.nix_dir()) {
+        Some((tools, apps)) => format!(
+            "{} · {}",
+            plural(tools, "tool", "tools"),
+            plural(apps, "app", "apps")
+        ),
+        None => warning("the config cannot be read").to_string(),
+    };
+    if find_nix().is_none() || !Path::new("/run/current-system").exists() {
+        v.push_str(&warning(" · not installed yet — run macup setup").to_string());
+    }
+    if mounted {
+        if config_in_sync(e) {
+            v.push_str(" · saved on the drive");
+        } else {
+            v.push_str(
+                &warning(
+                    " · changes not saved on the drive yet (the next apply or backup saves them)",
+                )
+                .to_string(),
             );
         }
     }
-    row(
-        "Nix",
-        find_nix()
-            .map(|n| nix_version(&n))
-            .unwrap_or_else(|| warning("not installed — run macup apply").to_string()),
-    );
-    row(
-        "System",
-        std::fs::read_link("/run/current-system")
-            .map(|p| {
-                p.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_else(|_| warning("nix-darwin not applied yet").to_string()),
-    );
-    let dir = e.nix_dir().display().to_string();
-    row(
-        "Config",
-        if !e.has_nix_config() {
-            warning("missing — macup apply copies it from the drive").to_string()
-        } else if !mounted {
-            dir
-        } else if config_in_sync(e) {
-            format!("{dir} · same as drive copy")
-        } else {
-            format!(
-                "{dir}{}",
-                warning(" · differs from drive copy (saved on next apply or backup)")
-            )
-        },
-    );
+    v
 }
