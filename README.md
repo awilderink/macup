@@ -7,21 +7,21 @@ The binary lives in the root of the backup drive (`/Volumes/Backup/macup`) so it
 ## After reinstalling macOS
 
 1. Connect and unlock this backup disk.
-2. Install and apply the system configuration:
+2. Run:
 
    ```zsh
-   /Volumes/Backup/macup apply
+   /Volumes/Backup/macup setup
    ```
 
-   It installs whatever is missing — Apple's Command Line Tools (finish that dialog and rerun), Lix (Nix), the Nix config (copied from `/Volumes/Backup/nix-darwin` to `~/.config/nix-darwin`) — then applies it: Homebrew, Ghostty, VS Code, Brave, Docker Desktop, Rekordbox, Claude Code and the command-line tools. On first run it offers to restore your zsh / Oh My Zsh config. Running it again later is safe; it only rebuilds.
+   It walks you through three steps:
 
-3. Bring back files and folders:
+   - **Tools, apps and settings.** It installs whatever is missing — Apple's Command Line Tools (finish that dialog and run `macup setup` again), Lix (Nix), the Nix config (copied from `/Volumes/Backup/nix-darwin` to `~/.config/nix-darwin`) — then applies it: Homebrew, Ghostty, VS Code, Brave, Docker Desktop, Rekordbox, Claude Code and the command-line tools.
+   - **Files and folders.** Browse the backup as a tree, tick files or folders (space), open folders with →, press `p` for presets (shell, Claude, SSH, Nix config), enter to continue. You get a preview first, including files that are newer on this Mac, and choose how existing files are handled. Nothing on the Mac is ever deleted by a restore. Esc skips the step.
+   - **Photos.** It shows the size of the backed-up Photos library against the free space on the Mac and asks before copying it back.
 
-   ```zsh
-   /Volumes/Backup/macup restore
-   ```
+   Running it again later is safe: applying only rebuilds, and a restore keeps files that are newer on the Mac.
 
-   Browse the backup as a tree, tick files or folders (space), open folders with →, press `p` for presets (shell, Claude, SSH, Nix config), enter to continue. You get a preview first, including files that are newer on this Mac, and choose how existing files are handled: keep newer ones (default), only add missing files, or overwrite. Nothing on the Mac is ever deleted by a restore.
+`macup apply` and `macup restore` do the first two steps on their own.
 
 ## The backup drive
 

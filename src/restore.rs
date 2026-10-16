@@ -116,7 +116,7 @@ pub fn run(e: &Env, req: Request) -> Result<()> {
     run_from(&src, req)
 }
 
-fn run_from(e: &Env, mut req: Request) -> Result<()> {
+pub fn run_from(e: &Env, mut req: Request) -> Result<()> {
     if req.photos {
         return photos::restore_photos(e, &req.target.join("Pictures"));
     }
@@ -161,6 +161,20 @@ pub fn require_backup(e: &Env) -> Result<()> {
     Ok(())
 }
 
+impl Request {
+    pub fn pick(target: PathBuf) -> Request {
+        Request {
+            paths: vec![],
+            target,
+            mode: None,
+            dry_run: false,
+            yes: false,
+            photos: false,
+            from: None,
+        }
+    }
+}
+
 pub fn menu(e: &Env) -> Result<()> {
     let src = crate::machines::open(e, None, true)?;
     let photos = !photos::libraries_in(&src.photos_dir()).is_empty()
@@ -177,13 +191,8 @@ pub fn menu(e: &Env) -> Result<()> {
     run_from(
         &src,
         Request {
-            paths: vec![],
-            target: e.home.clone(),
-            mode: None,
-            dry_run: false,
-            yes: false,
             photos,
-            from: None,
+            ..Request::pick(e.home.clone())
         },
     )
 }

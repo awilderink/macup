@@ -105,6 +105,14 @@ pub fn flake_host(e: &Env, nix: &Path) -> Result<String> {
 }
 
 pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
+    install_and_apply(e, update, check, "macup apply")?;
+    if check {
+        return Ok(());
+    }
+    offer_shell_restore(e)
+}
+
+pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Result<()> {
     if std::env::consts::ARCH != "aarch64" {
         bail!(
             "this configuration targets Apple Silicon; update flake.nix before using it on Intel"
@@ -118,7 +126,7 @@ pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
         .unwrap_or(false)
     {
         let _ = run_attached("xcode-select", &["--install".into()]);
-        bail!("finish Apple's Command Line Tools installer, then run `macup apply` again");
+        bail!("finish Apple's Command Line Tools installer, then run `{rerun}` again");
     }
     ok("installed");
 
@@ -129,7 +137,7 @@ pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
             note("installing Lix, a Nix implementation");
             run_attached("/bin/sh", &["-c".into(), "curl --proto '=https' --tlsv1.2 -sSf -L https://install.lix.systems/lix | sh -s -- install".into()])
                 .context("installing Lix failed")?;
-            find_nix().ok_or_else(|| anyhow!("Lix was installed but is not on PATH yet — open a new terminal and run `macup apply` again"))?
+            find_nix().ok_or_else(|| anyhow!("Lix was installed but is not on PATH yet — open a new terminal and run `{rerun}` again"))?
         }
     };
     ok(nix_version(&nix));
@@ -182,7 +190,7 @@ pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
             Err(err) => warn(format!("could not copy the config to the drive: {err:#}")),
         }
     }
-    offer_shell_restore(e)
+    Ok(())
 }
 
 pub fn ensure_config(e: &Env) -> Result<()> {

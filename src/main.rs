@@ -14,6 +14,7 @@ mod rsync;
 mod rules;
 mod search;
 mod selection;
+mod setup;
 mod sizer;
 mod status;
 mod ui;
@@ -102,7 +103,14 @@ enum Command {
         )]
         from: Option<String>,
     },
-    #[command(visible_aliases = ["install", "setup"], about = "Install whatever is missing (Command Line Tools, Nix, config) and apply the system configuration")]
+    #[command(
+        about = "Set up this Mac from the backup: tools, apps and settings, then your files and Photos"
+    )]
+    Setup,
+    #[command(
+        visible_alias = "install",
+        about = "Install whatever is missing (Command Line Tools, Nix, config) and apply the system configuration"
+    )]
     Apply {
         #[arg(
             long,
@@ -238,6 +246,7 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
                 from,
             },
         ),
+        Command::Setup => setup::run(e),
         Command::Apply { update, check } => nix::apply(e, update, check),
         Command::Add { kind, names } => packages::add(e, &names, kind.forced()),
         Command::Remove { kind, names } => packages::remove(e, &names, kind.forced()),
@@ -253,6 +262,7 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
 
 #[derive(Clone, Copy)]
 enum Action {
+    Setup,
     Backup,
     Restore,
     Apply,
@@ -278,6 +288,7 @@ fn menu(e: &Env) -> Result<()> {
                 "Restore files and folders from the backup".to_string(),
                 Action::Restore,
             ),
+            ("Set up this Mac from the backup".to_string(), Action::Setup),
         ];
         if e.nix_enabled() {
             options.extend([
@@ -296,6 +307,7 @@ fn menu(e: &Env) -> Result<()> {
             Ok(action) => action,
         };
         errors::report(match action {
+            Action::Setup => setup::run(e),
             Action::Backup => backup::menu(e),
             Action::Restore => restore::menu(e),
             Action::Apply => nix::apply(e, false, false),

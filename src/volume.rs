@@ -31,6 +31,20 @@ pub fn free_space(path: &Path) -> Result<(u64, u64)> {
     Ok((st.f_bavail * bsize, st.f_blocks * bsize))
 }
 
+pub fn disk_usage(path: &Path) -> Option<u64> {
+    let out = std::process::Command::new("du")
+        .arg("-sk")
+        .arg(path)
+        .output()
+        .ok()?;
+    let kib: u64 = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some(kib * 1024)
+}
+
 pub fn nearly_full(free: u64, total: u64) -> bool {
     total > 0 && free * 10 < total
 }
