@@ -20,6 +20,10 @@
 - DawnCache
 - GrShaderCache
 - /Library/Application Support/Caches
+- /Library/Application Support/FileProvider
+- /Library/Application Support/CloudDocs
+- /Library/Application Support/DifferentialPrivacy
+- /Library/Application Support/Knowledge
 - /Library/Application Support/Autodesk
 - /Library/Application Support/Docker Desktop
 - /Library/Application Support/com.apple.container

@@ -25,6 +25,9 @@ func TestEmbeddedRulesSelectTheRightFiles(t *testing.T) {
 		"Pictures/holiday.jpg",
 		"Library/Caches/x",
 		"Library/Application Support/App/data",
+		"Library/Application Support/AddressBook/AddressBook-v22.abcddb",
+		"Library/Application Support/FileProvider/x/wharf/tombstone/a",
+		"Library/Application Support/CloudDocs/session/db/client.db",
 		"code/proj/node_modules/m/index.js",
 		".claude/projects/p/memory/m.md",
 		".claude/file-history/h",
@@ -54,6 +57,7 @@ func TestEmbeddedRulesSelectTheRightFiles(t *testing.T) {
 		".claude/projects/p/memory/m.md",
 		".claude/settings.json",
 		"Documents/a.txt",
+		"Library/Application Support/AddressBook/AddressBook-v22.abcddb",
 		"Library/Application Support/App/data",
 		"Pictures/holiday.jpg",
 	}
