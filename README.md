@@ -30,9 +30,21 @@ The binary lives in the root of the backup drive (`/Volumes/Backup/macup`) so it
 ├── macup          this tool
 ├── README.md
 ├── home/          backup of the home folder
+├── photos/        backup of the Photos library
 ├── nix-darwin/    the Nix config a fresh Mac starts from
 └── archive/       PhotoRescue, pre-wipe files, the old shell scripts
 ```
+
+## Photos
+
+`macup backup` also backs up `~/Pictures/*.photoslibrary` to `photos/` on the drive (skip it with `--no-photos`, or run only it with `--photos-only`). A Photos library is a live database, so:
+
+- Quit the Photos app first; the backup refuses while it is open.
+- The database is copied as a consistent SQLite snapshot, then the rest of the library is synced around it. Photos' iCloud upload cache (`resources/cpl`) is left out.
+- The previous copy is kept aside as an APFS clone (almost no extra space) until the new copy passes an integrity check and has the same number of items; otherwise the previous copy is put back. An interrupted run is rolled back on the next one.
+- If the library on this Mac has fewer items or original files than the backup — for example because "Optimize Mac Storage" left originals only in iCloud — it refuses unless you pass `--yes`.
+
+`macup restore --photos` (or the menu) copies the library back into `~/Pictures`, and never overwrites one that is already there.
 
 ## Day to day
 

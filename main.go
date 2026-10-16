@@ -18,10 +18,11 @@ const usage = `macup — back up, restore and set up this Mac
 
 Usage:
   macup                      interactive menu
-  macup backup [-n] [--mirror] [--exclude PATTERN]
-                             copy your home folder to the backup drive
+  macup backup [-n] [--mirror] [--no-photos | --photos-only] [--exclude PATTERN]
+                             copy your home folder and Photos library to the backup drive
   macup restore [-n] [--path P]... [--mode update|missing|overwrite] [--target DIR] [--yes]
                              pick files and folders to bring back (no --path opens the picker)
+  macup restore --photos     copy the backed-up Photos library back into ~/Pictures
   macup apply [--update] [--check]
                              install whatever is missing (Command Line Tools, Nix, config)
                              and apply the system configuration; --update upgrades packages

@@ -14,8 +14,10 @@ import (
 type backupOptions struct {
 	dryRun   bool
 	mirror   bool
-	yes      bool
-	excludes []string
+	yes        bool
+	noPhotos   bool
+	photosOnly bool
+	excludes   []string
 }
 
 type multiFlag []string
@@ -31,6 +33,8 @@ func cmdBackup(e env, args []string) error {
 	fs.BoolVar(&o.dryRun, "n", false, "shorthand for --dry-run")
 	fs.BoolVar(&o.mirror, "mirror", false, "also delete files from the backup that are gone from this Mac")
 	fs.Var(&excludes, "exclude", "extra rsync pattern to skip (repeatable)")
+	fs.BoolVar(&o.noPhotos, "no-photos", false, "skip the Photos library")
+	fs.BoolVar(&o.photosOnly, "photos-only", false, "only back up the Photos library")
 	fs.BoolVar(&o.yes, "yes", false, "skip the safety questions (first backup from this Mac, --mirror deletions)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -162,6 +166,9 @@ func runBackup(e env, o backupOptions) error {
 	if err := checkMounted(e.volume); err != nil {
 		return err
 	}
+	if o.noPhotos && o.photosOnly {
+		return errors.New("--no-photos and --photos-only cannot be combined")
+	}
 	bin, err := findRsync(e)
 	if err != nil {
 		return err
@@ -171,17 +178,36 @@ func runBackup(e env, o backupOptions) error {
 		return err
 	}
 	defer os.Remove(rules)
-	if err := confirmFirstBackup(e, o); err != nil {
-		return err
-	}
-	if err := confirmMirror(e, o, bin, rules); err != nil {
-		return err
+	if !o.photosOnly {
+		if err := confirmFirstBackup(e, o); err != nil {
+			return err
+		}
+		if err := confirmMirror(e, o, bin, rules); err != nil {
+			return err
+		}
 	}
 	l, err := acquireLock(e.lockDir())
 	if err != nil {
 		return err
 	}
 	defer l.release()
+	if !o.photosOnly {
+		if err := backupHomeFolder(e, o, bin, rules); err != nil {
+			return err
+		}
+	}
+	if !o.noPhotos {
+		if err := backupPhotos(e, o, bin); err != nil {
+			return err
+		}
+	}
+	if free, total, err := freeSpace(e.volume); err == nil && total > 0 && free*10 < total {
+		warn("backup drive is %d%% full (%s free)", 100-free*100/total, humanBytes(int64(free)))
+	}
+	return nil
+}
+
+func backupHomeFolder(e env, o backupOptions, bin, rules string) error {
 	if err := os.MkdirAll(e.backupHome(), 0o755); err != nil {
 		return err
 	}
@@ -203,9 +229,6 @@ func runBackup(e env, o backupOptions) error {
 		if err := syncNixConfigToDrive(e, bin); err != nil {
 			warn("could not copy the Nix config to the drive: %v", err)
 		}
-	}
-	if free, total, err := freeSpace(e.volume); err == nil && total > 0 && free*10 < total {
-		warn("backup drive is %d%% full (%s free)", 100-free*100/total, humanBytes(int64(free)))
 	}
 	return nil
 }

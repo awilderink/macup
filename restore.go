@@ -59,8 +59,12 @@ func cmdRestore(e env, args []string) error {
 	dry := fs.Bool("dry-run", false, "only show what would be restored")
 	fs.BoolVar(dry, "n", false, "shorthand for --dry-run")
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
+	photos := fs.Bool("photos", false, "restore the backed-up Photos library into ~/Pictures (never overwrites one that exists)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *photos {
+		return restorePhotos(e, filepath.Join(*target, "Pictures"))
 	}
 	m := conflictMode(*mode)
 	if m != keepNewer && m != onlyMissing && m != overwrite {
@@ -114,6 +118,18 @@ func restoreSource(e env) (string, error) {
 }
 
 func restoreMenu(e env) error {
+	if len(backedUpLibraries(e)) > 0 {
+		what := "files"
+		if err := huh.NewSelect[string]().Title("What do you want to restore?").Options(
+			huh.NewOption("Files and folders from the home-folder backup", "files"),
+			huh.NewOption("The Photos library", "photos"),
+		).Value(&what).Run(); err != nil {
+			return err
+		}
+		if what == "photos" {
+			return restorePhotos(e, filepath.Join(e.home, "Pictures"))
+		}
+	}
 	src, err := restoreSource(e)
 	if err != nil {
 		return err

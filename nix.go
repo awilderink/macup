@@ -373,6 +373,7 @@ func cmdStatus(e env, _ []string) error {
 		row("Backup drive", v)
 	}
 	row("Last backup", lastBackup(e))
+	row("Photos", lastPhotoBackup(e))
 	if nix := findNix(); nix != "" {
 		out, _ := exec.Command(nix, "--version").Output()
 		row("Nix", firstLine(out))
