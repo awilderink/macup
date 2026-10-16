@@ -108,9 +108,13 @@ pub struct Request {
     pub dry_run: bool,
     pub yes: bool,
     pub photos: bool,
+    pub from: Option<String>,
 }
 
 pub fn run(e: &Env, mut req: Request) -> Result<()> {
+    crate::volume::check_mounted(&e.volume)?;
+    crate::machines::migrate_legacy(e)?;
+    let e = &crate::machines::source(e, req.from.as_deref())?;
     if req.photos {
         return photos::restore_photos(e, &req.target.join("Pictures"));
     }
@@ -156,6 +160,9 @@ pub fn require_backup(e: &Env) -> Result<()> {
 }
 
 pub fn menu(e: &Env) -> Result<()> {
+    crate::volume::check_mounted(&e.volume)?;
+    crate::machines::migrate_legacy(e)?;
+    let src = crate::machines::source(e, None)?;
     let req = Request {
         paths: vec![],
         target: e.home.clone(),
@@ -163,8 +170,9 @@ pub fn menu(e: &Env) -> Result<()> {
         dry_run: false,
         yes: false,
         photos: false,
+        from: Some(src.machine.clone()),
     };
-    if !photos::libraries_in(&e.photos_dir()).is_empty() {
+    if !photos::libraries_in(&src.photos_dir()).is_empty() {
         let photos = select(
             "What do you want to restore?",
             &[

@@ -9,7 +9,7 @@ out="${MACUP_OUT:-$HOME/.local/bin/macup}"
 mkdir -p "${out:h}"
 cp target/release/macup "$out"
 print "built $out"
-if [[ -d /Volumes/Backup/home ]]; then
+if [[ -f /Volumes/Backup/macup.toml ]]; then
   cp target/release/macup /Volumes/Backup/macup
   print "copied to /Volumes/Backup/macup"
 fi

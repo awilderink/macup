@@ -4,6 +4,7 @@ mod config;
 mod env;
 mod errors;
 mod guard;
+mod machines;
 mod nix;
 mod packages;
 mod photos;
@@ -93,6 +94,12 @@ enum Command {
             help = "restore the backed-up Photos library into ~/Pictures (never overwrites one that exists)"
         )]
         photos: bool,
+        #[arg(
+            long,
+            value_name = "MAC",
+            help = "restore from another Mac's backup on this drive (see macup status)"
+        )]
+        from: Option<String>,
     },
     #[command(visible_aliases = ["install", "setup"], about = "Install whatever is missing (Command Line Tools, Nix, config) and apply the system configuration")]
     Apply {
@@ -188,6 +195,7 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
             dry_run,
             yes,
             photos,
+            from,
         } => restore::run(
             e,
             restore::Request {
@@ -197,6 +205,7 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
                 dry_run,
                 yes,
                 photos,
+                from,
             },
         ),
         Command::Apply { update, check } => nix::apply(e, update, check),

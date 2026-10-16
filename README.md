@@ -27,17 +27,22 @@ The binary lives in the root of the backup drive (`/Volumes/Backup/macup`) so it
 
 ```
 /Volumes/Backup/
-├── macup          this tool
+├── macup                       this tool
+├── macup.toml                  your settings (see Configuration)
 ├── README.md
-├── home/          backup of the home folder
-├── photos/        backup of the Photos library, plus originals/: every original, kept forever
-├── nix-darwin/    the Nix config a fresh Mac starts from
-└── archive/       PhotoRescue, pre-wipe files, the old shell scripts
+├── nix-darwin/                 the Nix config a fresh Mac starts from
+├── macs/
+│   └── Arvins-MacBook-Pro/     one folder per Mac, named after it (MACUP_MACHINE overrides)
+│       ├── home/               backup of the home folder
+│       └── photos/             the Photos library copy and originals/, the archive of every original
+└── archive/                    anything else you keep on the drive
 ```
+
+Several Macs can share a drive; each backs up into its own folder. `macup restore` restores from this Mac's folder, or, when this Mac has none (for example after a reinstall that changed its name) and only one Mac is on the drive, from that one; `--from <name>` picks another. A drive with the older single-Mac layout (`home/` and `photos/` at the root) is moved into `macs/<this Mac>/` on the first backup or restore.
 
 ## Photos
 
-`macup backup` also backs up `~/Pictures/*.photoslibrary` to `photos/` on the drive (skip it with `--no-photos`, or run only it with `--photos-only`). It keeps two things there:
+`macup backup` also backs up `~/Pictures/*.photoslibrary` to `macs/<this Mac>/photos/` on the drive (skip it with `--no-photos`, or run only it with `--photos-only`). It keeps two things there:
 
 - **A copy of the library** (`photos/Photos Library.photoslibrary`) that follows the Mac. The database is copied as a consistent SQLite snapshot, Photos' iCloud upload cache is left out, and the update is built on a staging copy (an APFS clone, so almost no extra space) that is only swapped in, atomically, after an integrity check and an item count. A failed or interrupted run leaves the existing copy untouched. While the Photos app is open this copy is skipped with a warning.
 - **The originals archive** (`photos/originals/2024/2024-02-18/DSCF3245.JPG`, Live Photo videos next to their photo) that only ever grows. Every backup archives from the drive's library copy before and after updating it, so originals that leave the Mac — "Optimize Mac Storage", deleted photos — stay in the archive. Files are APFS clones of the library copy, so they take no extra space until the library copy drops them.

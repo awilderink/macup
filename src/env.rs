@@ -7,6 +7,7 @@ use std::sync::Arc;
 pub struct Env {
     pub home: PathBuf,
     pub volume: PathBuf,
+    pub machine: String,
     pub config: Arc<Config>,
 }
 
@@ -22,6 +23,7 @@ impl Env {
         Ok(Env {
             home: env_or("MACUP_HOME", home),
             config: Arc::new(Config::load(&volume)?),
+            machine: env_string("MACUP_MACHINE", &this_mac_name()),
             volume,
         })
     }
@@ -31,8 +33,24 @@ impl Env {
         Env {
             home,
             volume,
+            machine: "test-mac".into(),
             config: Arc::default(),
         }
+    }
+
+    pub fn for_machine(&self, machine: &str) -> Env {
+        Env {
+            machine: machine.to_string(),
+            ..self.clone()
+        }
+    }
+
+    pub fn macs_dir(&self) -> PathBuf {
+        self.volume.join("macs")
+    }
+
+    pub fn machine_dir(&self) -> PathBuf {
+        self.macs_dir().join(&self.machine)
     }
 
     pub fn user(&self) -> String {
@@ -43,11 +61,11 @@ impl Env {
     }
 
     pub fn backup_home(&self) -> PathBuf {
-        self.volume.join("home")
+        self.machine_dir().join("home")
     }
 
     pub fn photos_dir(&self) -> PathBuf {
-        self.volume.join("photos")
+        self.machine_dir().join("photos")
     }
 
     pub fn archive_dir(&self) -> PathBuf {
@@ -76,6 +94,21 @@ impl Env {
 
     pub fn has_nix_config(&self) -> bool {
         has_flake(&self.nix_dir())
+    }
+}
+
+pub fn this_mac_name() -> String {
+    let name = std::process::Command::new("scutil")
+        .args(["--get", "LocalHostName"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if name.is_empty() {
+        "this-mac".into()
+    } else {
+        name
     }
 }
 

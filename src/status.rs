@@ -24,6 +24,25 @@ pub fn show(e: &Env) {
     } else {
         row("Backup drive", warning("not connected").to_string());
     }
+    if mounted {
+        let others: Vec<String> = crate::machines::backed_up_macs(e)
+            .into_iter()
+            .filter(|m| *m != e.machine)
+            .collect();
+        let mut v = e.machine.clone();
+        if !others.is_empty() {
+            v.push_str(&format!(" · also on the drive: {}", others.join(", ")));
+        }
+        if crate::machines::has_legacy_layout(e) {
+            v.push_str(
+                &warning(
+                    " · drive uses the old single-Mac layout; the next backup or restore moves it",
+                )
+                .to_string(),
+            );
+        }
+        row("This Mac", v);
+    }
     row("Last backup", crate::backup::last_backup(e));
     row("Photos", crate::photos::last_photo_backup(e));
     row(

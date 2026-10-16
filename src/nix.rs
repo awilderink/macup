@@ -270,7 +270,13 @@ fn offer_shell_restore(e: &Env) -> Result<()> {
     if e.home.join(".oh-my-zsh").exists() {
         return Ok(());
     }
-    let paths = existing_paths(&e.backup_home(), &shell_preset().paths);
+    if check_mounted(&e.volume).is_err() || crate::machines::migrate_legacy(e).is_err() {
+        return Ok(());
+    }
+    let Ok(src) = crate::machines::source(e, None) else {
+        return Ok(());
+    };
+    let paths = existing_paths(&src.backup_home(), &shell_preset().paths);
     if paths.is_empty() {
         return Ok(());
     }
@@ -290,7 +296,7 @@ fn offer_shell_restore(e: &Env) -> Result<()> {
     )? {
         return Ok(());
     }
-    crate::restore::shell_restore(e, &paths)
+    crate::restore::shell_restore(&src, &paths)
 }
 
 pub fn edit(e: &Env, section: Option<String>) -> Result<()> {

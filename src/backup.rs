@@ -109,6 +109,7 @@ pub fn mirror_guard(e: &Env, o: &Options, bin: &str, rules: &str) -> Result<Opti
 
 pub fn run(e: &Env, o: &Options) -> Result<()> {
     check_mounted(&e.volume)?;
+    crate::machines::migrate_legacy(e)?;
     if o.no_photos && o.photos_only {
         bail!("--no-photos and --photos-only cannot be combined");
     }
