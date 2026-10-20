@@ -4,6 +4,22 @@ use toml_edit::{Array, DocumentMut, Item, Key, Table, Value};
 pub fn upgrade(src: &str) -> Result<Option<String>> {
     let mut doc: DocumentMut = src.parse().context("macup.toml is not valid TOML")?;
     let mut changed = doc.remove("nix").is_some();
+    if let Some(backup) = doc.get_mut("backup").and_then(Item::as_table_like_mut)
+        && let Some(rules) = backup.remove("rules")
+    {
+        let rules: Vec<String> = rules
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (skip, keep) = crate::config::convert_rules(&rules)?;
+        backup.insert("skip", Item::Value(Value::Array(lines(&skip))));
+        backup.insert("keep", Item::Value(Value::Array(lines(&keep))));
+        changed = true;
+    }
     if !doc.contains_key("install")
         && let Some(mut tools) = doc.remove("tools")
     {
@@ -32,6 +48,21 @@ pub fn upgrade(src: &str) -> Result<Option<String>> {
         changed = true;
     }
     Ok(changed.then(|| doc.to_string()))
+}
+
+fn lines(items: &[String]) -> Array {
+    let mut list = Array::new();
+    for item in items {
+        list.push(item.as_str());
+    }
+    for v in list.iter_mut() {
+        v.decor_mut().set_prefix("\n  ");
+    }
+    if !items.is_empty() {
+        list.set_trailing("\n");
+        list.set_trailing_comma(true);
+    }
+    list
 }
 
 pub fn set_rust(src: &str) -> Result<String> {

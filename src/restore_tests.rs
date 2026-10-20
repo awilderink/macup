@@ -17,9 +17,6 @@ fn clean_rel_rejects_escapes_and_normalises() {
 #[test]
 fn restore_modes_handle_newer_local_files() {
     let (_dir, e) = fixture_env();
-    if find_rsync().is_err() {
-        return;
-    }
     fs::create_dir_all(e.backup_home().join("Documents")).unwrap();
     fs::write(e.backup_home().join("Documents/a.txt"), "backup").unwrap();
     fs::write(e.backup_home().join("Documents/b.txt"), "b").unwrap();
@@ -56,9 +53,6 @@ fn restore_modes_handle_newer_local_files() {
 #[test]
 fn restore_skips_an_existing_photos_library() {
     let (_dir, e) = fixture_env();
-    if find_rsync().is_err() {
-        return;
-    }
     let backed_up = e
         .backup_home()
         .join("Pictures/Photos Library.photoslibrary");
@@ -89,9 +83,6 @@ fn restore_skips_an_existing_photos_library() {
 #[test]
 fn ssh_permissions_are_fixed_after_restore() {
     let (_dir, e) = fixture_env();
-    if find_rsync().is_err() {
-        return;
-    }
     fs::create_dir_all(e.backup_home().join(".ssh")).unwrap();
     fs::write(e.backup_home().join(".ssh/id_ed25519"), "key").unwrap();
     fs::write(e.backup_home().join(".ssh/id_ed25519.pub"), "pub").unwrap();

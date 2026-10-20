@@ -2,8 +2,10 @@ pub mod archive;
 pub mod library;
 pub mod photokit;
 
+use crate::copy::{Job, Spec, log_path, plan};
 use crate::env::Env;
-use crate::rsync::{Job, dir_arg, dry_run, find_rsync, log_path, rsync_args};
+use crate::pattern::Pattern;
+use crate::rules::Filter;
 use crate::ui::{
     human_bytes, note, ok, plural, report_result, run_job, step, warn, warning, with_spinner,
 };
@@ -61,14 +63,15 @@ pub fn photos_app_running() -> bool {
         .unwrap_or(false)
 }
 
-fn photo_args(src: &Path, dst: &Path) -> Vec<String> {
-    rsync_args([
-        "--delete".to_string(),
-        "--filter=- /database/Photos.sqlite*".to_string(),
-        "--filter=H /resources/cpl/".to_string(),
-        dir_arg(src),
-        dir_arg(dst),
-    ])
+fn photo_spec(src: &Path, dst: &Path) -> Result<Spec> {
+    Ok(Spec {
+        src: src.to_path_buf(),
+        dst: dst.to_path_buf(),
+        filter: Filter::skipping(&["/database/Photos.sqlite*".to_string()])?,
+        hide: vec![Pattern::parse("/resources/cpl/")?],
+        mirror: true,
+        ..Spec::default()
+    })
 }
 
 pub fn archive_library(e: &Env, library: &Path) -> Result<()> {
@@ -87,11 +90,11 @@ pub fn archive_library(e: &Env, library: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn backup_library(e: &Env, dry_run_only: bool, bin: &str, lib: &PhotoLibrary) -> Result<()> {
+pub fn backup_library(e: &Env, dry_run_only: bool, lib: &PhotoLibrary) -> Result<()> {
     let src_items =
         library::item_count(&lib.src).with_context(|| format!("cannot read {}", lib.name))?;
     if dry_run_only {
-        return preview(bin, lib, src_items);
+        return preview(lib, src_items);
     }
     let replacing = lib.dst.exists();
     if replacing {
@@ -105,7 +108,7 @@ pub fn backup_library(e: &Env, dry_run_only: bool, bin: &str, lib: &PhotoLibrary
     if replacing {
         clonefile(&lib.dst, &staging).context("could not stage the Photos backup")?;
     }
-    if let Err(err) = stage(e, bin, lib, &staging, src_items) {
+    if let Err(err) = stage(e, lib, &staging, src_items) {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(err);
     }
@@ -121,7 +124,7 @@ pub fn backup_library(e: &Env, dry_run_only: bool, bin: &str, lib: &PhotoLibrary
     archive_library(e, &lib.dst)
 }
 
-fn stage(e: &Env, bin: &str, lib: &PhotoLibrary, staging: &Path, src_items: u64) -> Result<()> {
+fn stage(e: &Env, lib: &PhotoLibrary, staging: &Path, src_items: u64) -> Result<()> {
     let db = library::db_path(staging);
     std::fs::create_dir_all(db.parent().expect("database has a parent"))?;
     for suffix in ["", "-wal", "-shm"] {
@@ -132,8 +135,7 @@ fn stage(e: &Env, bin: &str, lib: &PhotoLibrary, staging: &Path, src_items: u64)
         || library::snapshot(&lib.src, &db),
     )?;
     let job = Job {
-        bin: bin.to_string(),
-        args: photo_args(&lib.src, staging),
+        spec: photo_spec(&lib.src, staging)?,
         log_path: log_path(e, "photos"),
         strict: true,
     };
@@ -168,16 +170,9 @@ pub fn verify(library_dir: &Path, want: u64) -> Result<()> {
     Ok(())
 }
 
-fn preview(bin: &str, lib: &PhotoLibrary, src_items: u64) -> Result<()> {
-    let (mut files, mut deleted, mut bytes) = (0, 0, 0);
-    dry_run(bin, &photo_args(&lib.src, &lib.dst), |it| {
-        if it.deletion() {
-            deleted += 1;
-        } else if it.file() {
-            files += 1;
-            bytes += it.size;
-        }
-    })?;
+fn preview(lib: &PhotoLibrary, src_items: u64) -> Result<()> {
+    let plan = plan(&photo_spec(&lib.src, &lib.dst)?);
+    let (files, deleted, bytes) = (plan.files().count(), plan.deletions().count(), plan.bytes());
     step(format!("Photos library {} ({src_items} items)", lib.name));
     note(format!(
         "{} to copy ({}), {} to remove from the library copy (the originals archive keeps them), plus the database",
@@ -421,7 +416,6 @@ pub fn restore_photos(e: &Env, target: &Path) -> Result<()> {
             e.photos_dir().display()
         );
     }
-    let bin = find_rsync()?;
     for src in libs {
         let name = src
             .file_name()
@@ -437,8 +431,11 @@ pub fn restore_photos(e: &Env, target: &Path) -> Result<()> {
         }
         std::fs::create_dir_all(target)?;
         let job = Job {
-            bin: bin.clone(),
-            args: rsync_args([dir_arg(&src), dir_arg(&dst)]),
+            spec: Spec {
+                src: src.clone(),
+                dst: dst.clone(),
+                ..Spec::default()
+            },
             log_path: log_path(e, "restore"),
             strict: false,
         };

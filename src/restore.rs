@@ -1,10 +1,9 @@
 use crate::access::full_disk_access_guard;
+use crate::copy::{Existing, Job, Spec, log_path};
 use crate::env::Env;
 use crate::photos;
 use crate::picker::{pick_paths, presets};
-use crate::rsync::{
-    Item, Job, TempFile, dir_arg, dry_run, find_rsync, log_path, rsync_args, write_temp,
-};
+use crate::rules::Filter;
 use crate::selection::is_under;
 use crate::ui::{
     confirm_or_cancel, human_bytes, interactive, note, ok, plural, report_result, run_job, select,
@@ -23,11 +22,11 @@ pub enum Mode {
 }
 
 impl Mode {
-    fn flag(self) -> Option<&'static str> {
+    fn existing(self) -> Existing {
         match self {
-            Mode::KeepNewer => Some("--update"),
-            Mode::OnlyMissing => Some("--ignore-existing"),
-            Mode::Overwrite => None,
+            Mode::KeepNewer => Existing::KeepNewer,
+            Mode::OnlyMissing => Existing::OnlyMissing,
+            Mode::Overwrite => Existing::Changed,
         }
     }
 }
@@ -53,8 +52,8 @@ impl Plan {
         }
     }
 
-    fn add(&mut self, it: Item, src: &Path, target: &Path) {
-        if let Some(root) = library_root(&it.name) {
+    fn add(&mut self, name: &str, size: u64, new: bool, src: &Path, target: &Path) {
+        if let Some(root) = library_root(name) {
             if self.skipped_libraries.iter().any(|l| l == root) {
                 return;
             }
@@ -63,25 +62,22 @@ impl Plan {
                 return;
             }
         }
-        if !it.file() {
-            return;
-        }
-        if it.is_new() {
+        if new {
             self.new_files += 1;
-            self.new_bytes += it.size;
+            self.new_bytes += size;
             return;
         }
         self.changed += 1;
-        self.changed_bytes += it.size;
-        let here = std::fs::symlink_metadata(target.join(&it.name)).and_then(|m| m.modified());
-        let there = std::fs::symlink_metadata(src.join(&it.name)).and_then(|m| m.modified());
+        self.changed_bytes += size;
+        let here = std::fs::symlink_metadata(target.join(name)).and_then(|m| m.modified());
+        let there = std::fs::symlink_metadata(src.join(name)).and_then(|m| m.modified());
         if let (Ok(here), Ok(there)) = (here, there)
             && here > there
         {
             self.newer_here += 1;
-            self.newer_here_bytes += it.size;
+            self.newer_here_bytes += size;
             if self.newer_samples.len() < 8 {
-                self.newer_samples.push(it.name);
+                self.newer_samples.push(name.to_string());
             }
         }
     }
@@ -196,10 +192,9 @@ pub fn restore_paths(
     dry: bool,
     yes: bool,
 ) -> Result<()> {
-    let bin = find_rsync()?;
     let plan = with_spinner(
         &format!("Comparing the backup with {}…", target.display()),
-        || plan(e, &bin, target, paths),
+        || plan(e, target, paths),
     )?;
     print_plan(&plan);
     if plan.new_files + plan.changed == 0 {
@@ -238,7 +233,7 @@ pub fn restore_paths(
             false,
         )?;
     }
-    run_restore(e, &bin, target, paths, mode, &plan.skipped_libraries)
+    run_restore(e, target, paths, mode, &plan.skipped_libraries)
 }
 
 fn choose_mode(plan: &Plan) -> Result<Mode> {
@@ -270,40 +265,31 @@ fn choose_mode(plan: &Plan) -> Result<Mode> {
     )
 }
 
-fn file_list(paths: &[String]) -> Result<TempFile> {
-    let mut data = paths.join("\0");
-    data.push('\0');
-    write_temp("macup-restore-list", data.as_bytes())
-}
-
-fn restore_args(
+fn restore_spec(
     e: &Env,
-    list: &TempFile,
     target: &Path,
+    paths: &[String],
     mode: Mode,
     skip: &[String],
-) -> Vec<String> {
-    let mut args = rsync_args([
-        "-r".to_string(),
-        "--from0".to_string(),
-        format!("--files-from={}", list.arg()),
-    ]);
-    args.extend(skip.iter().map(|lib| format!("--exclude=/{lib}/")));
-    args.extend(mode.flag().map(String::from));
-    args.push(dir_arg(&e.backup_home()));
-    args.push(dir_arg(target));
-    args
+) -> Result<Spec> {
+    let skip: Vec<String> = skip.iter().map(|lib| format!("/{lib}/")).collect();
+    Ok(Spec {
+        src: e.backup_home(),
+        dst: target.to_path_buf(),
+        filter: Filter::skipping(&skip)?,
+        selection: Some(paths.to_vec()),
+        existing: mode.existing(),
+        ..Spec::default()
+    })
 }
 
-fn plan(e: &Env, bin: &str, target: &Path, paths: &[String]) -> Result<Plan> {
-    let list = file_list(paths)?;
+fn plan(e: &Env, target: &Path, paths: &[String]) -> Result<Plan> {
+    let spec = restore_spec(e, target, paths, Mode::Overwrite, &[])?;
     let mut plan = Plan::default();
     let src = e.backup_home();
-    dry_run(
-        bin,
-        &restore_args(e, &list, target, Mode::Overwrite, &[]),
-        |it| plan.add(it, &src, target),
-    )?;
+    for (name, size, new) in crate::copy::plan(&spec).files() {
+        plan.add(name, size, new, &src, target);
+    }
     Ok(plan)
 }
 
@@ -347,13 +333,11 @@ fn touches(paths: &[String], dir: &str) -> bool {
 
 fn run_restore(
     e: &Env,
-    bin: &str,
     target: &Path,
     paths: &[String],
     mode: Mode,
     skip: &[String],
 ) -> Result<()> {
-    let list = file_list(paths)?;
     if touches(paths, "Library")
         && let Some(g) = full_disk_access_guard(e, "restore")
     {
@@ -361,8 +345,7 @@ fn run_restore(
     }
     let _lock = Lock::acquire(&e.lock_dir())?;
     let job = Job {
-        bin: bin.to_string(),
-        args: restore_args(e, &list, target, mode, skip),
+        spec: restore_spec(e, target, paths, mode, skip)?,
         log_path: log_path(e, "restore"),
         strict: false,
     };
@@ -381,8 +364,7 @@ fn run_restore(
 }
 
 pub fn shell_restore(e: &Env, paths: &[String]) -> Result<()> {
-    let bin = find_rsync()?;
-    run_restore(e, &bin, &e.home, paths, Mode::KeepNewer, &[])
+    run_restore(e, &e.home, paths, Mode::KeepNewer, &[])
 }
 
 fn fix_ssh_permissions(dir: &Path) {

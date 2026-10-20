@@ -13,16 +13,8 @@ fn install(brew: &[&str], cask: &[&str], rust: bool) -> InstallConfig {
 fn writes_one_brewfile_line_per_entry() {
     assert_eq!(
         brewfile(&install(&["bat", "node@22"], &["ghostty"], false)),
-        "brew \"bat\"\nbrew \"node@22\"\nbrew \"rsync\"\ncask \"ghostty\"\n"
+        "brew \"bat\"\nbrew \"node@22\"\ncask \"ghostty\"\n"
     );
-}
-
-// Backups and restores need GNU rsync, so every apply installs it, but a
-// listed rsync must not appear twice.
-#[test]
-fn always_includes_rsync_once() {
-    let out = brewfile(&install(&["rsync"], &[], false));
-    assert_eq!(out, "brew \"rsync\"\n");
 }
 
 // The lists live on the drive. Without it there is nothing to install from,

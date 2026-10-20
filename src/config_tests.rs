@@ -4,20 +4,73 @@ use super::*;
 fn missing_file_means_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let c = Config::load(dir.path()).unwrap();
-    assert!(c.backup.rules.is_empty() && c.restore.presets.is_empty());
+    assert!(c.backup.skip.is_empty() && c.restore.presets.is_empty());
 }
 
 #[test]
-fn reads_rules_and_presets() {
+fn reads_skip_keep_and_presets() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join(FILE_NAME),
-        "[backup]\nrules = [\"- /go\", \"+ /Library/Pioneer/***\"]\n\n[[restore.presets]]\nname = \"Claude\"\npaths = [\".claude\"]\n",
+        "[backup]\nskip = [\"/go\"]\nkeep = [\"/Library/Pioneer\"]\n\n[[restore.presets]]\nname = \"Claude\"\npaths = [\".claude\"]\n",
     )
     .unwrap();
     let c = Config::load(dir.path()).unwrap();
-    assert_eq!(c.backup.rules, vec!["- /go", "+ /Library/Pioneer/***"]);
+    assert_eq!(c.backup.skip, vec!["/go"]);
+    assert_eq!(c.backup.keep, vec!["/Library/Pioneer"]);
     assert_eq!(c.restore.presets[0].paths, vec![".claude"]);
+}
+
+// Rules written for rsync keep working: each becomes a skip or a keep that
+// selects the same files.
+#[test]
+fn converts_old_rsync_rules() {
+    let rules: Vec<String> = [
+        "- ComfyUI",
+        "- /Library/Application Support/Native Instruments",
+        "- /code/**/target/",
+        "+ /Library/Pioneer/",
+        "+ /Library/Pioneer/***",
+        "- /go",
+        "- /.fig*",
+        "- /.claude/projects/***",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let (skip, keep) = convert_rules(&rules).unwrap();
+    assert_eq!(
+        skip,
+        vec![
+            "ComfyUI",
+            "/Library/Application Support/Native Instruments",
+            "/code/**/target/",
+            "/go",
+            "/.fig*",
+            "/.claude/projects",
+        ]
+    );
+    assert_eq!(keep, vec!["/Library/Pioneer"]);
+    let c = Config::parse("[backup]\nrules = [\"- /go\", \"+ /Library/Pioneer/***\"]\n").unwrap();
+    assert!(c.old_layout);
+    assert_eq!(
+        (c.backup.skip, c.backup.keep),
+        (
+            vec!["/go".to_string()],
+            vec!["/Library/Pioneer".to_string()]
+        )
+    );
+}
+
+// With rsync a skip after a keep could not reach inside it; with skip and keep,
+// skips always win. Converting such a pair would change what is backed up, so
+// it stops and says so.
+#[test]
+fn refuses_rules_whose_order_matters() {
+    let rules = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert!(convert_rules(&rules(&["+ /Library/Pioneer/***", "- /Library/Pioneer/x"])).is_err());
+    assert!(convert_rules(&rules(&["+ /Library/Pioneer/***", "- *.bak"])).is_err());
+    assert!(convert_rules(&rules(&["- *.bak", "+ /Library/Pioneer/***"])).is_ok());
 }
 
 // A typo in the config must stop macup instead of being ignored, otherwise a
@@ -29,12 +82,20 @@ fn rejects_unknown_keys_and_malformed_rules() {
     assert!(Config::load(dir.path()).is_err());
     std::fs::write(dir.path().join(FILE_NAME), "[backup]\nrules = [\"/go\"]\n").unwrap();
     assert!(Config::load(dir.path()).is_err());
+    std::fs::write(dir.path().join(FILE_NAME), "[backup]\nskip = [\"- /go\"]\n").unwrap();
+    assert!(Config::load(dir.path()).is_err());
+    std::fs::write(
+        dir.path().join(FILE_NAME),
+        "[backup]\nkeep = [\"/Documents\"]\n",
+    )
+    .unwrap();
+    assert!(Config::load(dir.path()).is_err());
 }
 
 #[test]
 fn template_parses() {
-    let c: Config = toml::from_str(TEMPLATE).unwrap();
-    assert!(c.backup.rules.is_empty());
+    let c = Config::parse(TEMPLATE).unwrap();
+    assert!(c.backup.skip.is_empty() && c.backup.keep.is_empty());
 }
 
 // A drive written while macup still used Nix must keep loading: the nix list

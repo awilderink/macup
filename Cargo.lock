@@ -916,7 +916,6 @@ dependencies = [
  "objc2-foundation",
  "objc2-photos",
  "ratatui",
- "regex",
  "rusqlite",
  "serde",
  "serde_json",

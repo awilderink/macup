@@ -102,6 +102,23 @@ pub const COMES_WITH_MACOS: [&str; 2] = ["curl", "git"];
 
 fn upgrade_old_layout(table: &mut toml::Table) -> Result<bool> {
     let mut changed = table.remove("nix").is_some();
+    if let Some(toml::Value::Table(backup)) = table.get_mut("backup")
+        && let Some(rules) = backup.remove("rules")
+    {
+        let toml::Value::Array(rules) = rules else {
+            bail!("backup.rules must be a list");
+        };
+        let rules: Vec<String> = rules
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        let (skip, keep) = convert_rules(&rules)?;
+        let list =
+            |v: Vec<String>| toml::Value::Array(v.into_iter().map(toml::Value::String).collect());
+        backup.insert("skip".into(), list(skip));
+        backup.insert("keep".into(), list(keep));
+        changed = true;
+    }
     if let Some(tools) = table.remove("tools") {
         if table.contains_key("install") {
             bail!(
@@ -143,7 +160,52 @@ fn upgrade_old_layout(table: &mut toml::Table) -> Result<bool> {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BackupConfig {
-    pub rules: Vec<String>,
+    pub skip: Vec<String>,
+    pub keep: Vec<String>,
+}
+
+pub fn convert_rules(rules: &[String]) -> Result<(Vec<String>, Vec<String>)> {
+    let (mut skip, mut keep): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for rule in rules {
+        let (sign, pattern) = match (rule.strip_prefix("- "), rule.strip_prefix("+ ")) {
+            (Some(p), _) => ('-', p),
+            (_, Some(p)) => ('+', p),
+            _ => bail!(
+                "backup rule {rule:?} must start with \"+ \" or \"- \"; better, move it under skip or keep"
+            ),
+        };
+        let base = pattern.strip_suffix("/***").unwrap_or(pattern);
+        if sign == '+' {
+            if !base.starts_with('/') {
+                bail!(
+                    "backup rule {rule:?} can't be converted; write it under keep as a path from your home folder"
+                );
+            }
+            let base = base.trim_end_matches('/').to_string();
+            if !keep.contains(&base) {
+                keep.push(base);
+            }
+            continue;
+        }
+        let inside_a_keep = keep.iter().find(|k| {
+            !base.starts_with('/') || {
+                let b = base.trim_end_matches('/');
+                b == k.as_str()
+                    || b.strip_prefix(k.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            }
+        });
+        if let Some(k) = inside_a_keep {
+            bail!(
+                "backup rule {rule:?} comes after \"+ {k}\" and could skip things inside it; with skip and keep, skips always win, so move these two to skip and keep by hand"
+            );
+        }
+        let base = base.to_string();
+        if !skip.contains(&base) {
+            skip.push(base);
+        }
+    }
+    Ok((skip, keep))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -185,18 +247,18 @@ impl Config {
 
     fn validate(&self) -> Result<()> {
         self.install.validate()?;
-        for rule in &self.backup.rules {
-            if !(rule.starts_with("+ ") || rule.starts_with("- ")) || rule.len() < 3 {
-                bail!(
-                    "backup rule {rule:?} must start with \"+ \" (include) or \"- \" (exclude), like the rsync filter rules in the README"
-                );
-            }
+        for skip in &self.backup.skip {
+            crate::pattern::Pattern::parse(skip)
+                .with_context(|| format!("backup.skip {skip:?}"))?;
+        }
+        for keep in &self.backup.keep {
+            crate::rules::check_keep(keep)?;
         }
         Ok(())
     }
 }
 
-pub const TEMPLATE: &str = "[backup]\nrules = []\n\n[restore]\npresets = []\n";
+pub const TEMPLATE: &str = "[backup]\nskip = []\nkeep = []\n\n[restore]\npresets = []\n";
 
 pub fn init_drive(drive: &Path) -> Result<()> {
     crate::volume::check_mounted(drive)?;

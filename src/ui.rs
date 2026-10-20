@@ -1,5 +1,5 @@
+use crate::copy::{Job, Outcome, Progress};
 use crate::errors::{Silent, cancelled};
-use crate::rsync::{Job, Progress, RsyncResult};
 use anyhow::Result;
 use console::{Style, StyledObject, Term};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -8,10 +8,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 static JOB_RUNNING: AtomicBool = AtomicBool::new(false);
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+pub fn interrupted() -> bool {
+    INTERRUPTED.load(Ordering::SeqCst)
+}
 
 pub fn install_interrupt_handler() {
     let _ = ctrlc::set_handler(|| {
         if JOB_RUNNING.load(Ordering::SeqCst) {
+            INTERRUPTED.store(true, Ordering::SeqCst);
             return;
         }
         let _ = Term::stdout().show_cursor();
@@ -114,7 +120,8 @@ pub fn with_spinner<T>(message: &str, action: impl FnOnce() -> Result<T>) -> Res
     result
 }
 
-pub fn run_job(heading: &str, job: &Job) -> Result<RsyncResult> {
+pub fn run_job(heading: &str, job: &Job) -> Result<Outcome> {
+    INTERRUPTED.store(false, Ordering::SeqCst);
     JOB_RUNNING.store(true, Ordering::SeqCst);
     let result = if interactive() {
         run_job_with_bar(heading, job)
@@ -125,7 +132,7 @@ pub fn run_job(heading: &str, job: &Job) -> Result<RsyncResult> {
     result
 }
 
-fn run_job_plain(heading: &str, job: &Job) -> Result<RsyncResult> {
+fn run_job_plain(heading: &str, job: &Job) -> Result<Outcome> {
     step(heading);
     let mut last = Instant::now() - Duration::from_secs(10);
     job.run(
@@ -139,7 +146,7 @@ fn run_job_plain(heading: &str, job: &Job) -> Result<RsyncResult> {
     )
 }
 
-fn run_job_with_bar(heading: &str, job: &Job) -> Result<RsyncResult> {
+fn run_job_with_bar(heading: &str, job: &Job) -> Result<Outcome> {
     let pb = ProgressBar::new(100).with_message(heading.to_string());
     pb.set_style(
         ProgressStyle::with_template("{spinner} {msg}\n  {wide_bar} {pos:>3}%\n  {prefix}")
@@ -175,15 +182,15 @@ fn run_job_with_bar(heading: &str, job: &Job) -> Result<RsyncResult> {
     pb.finish_and_clear();
     if messages > shown {
         warn(format!(
-            "{messages} messages from rsync; the full list is in the log"
+            "{messages} files had problems; the full list is in the log"
         ));
     }
     result
 }
 
-pub fn report_result(what: &str, res: &RsyncResult) -> Result<()> {
+pub fn report_result(what: &str, res: &Outcome) -> Result<()> {
     let line = format!("{what} {} in {}s", res.summary(), res.duration.as_secs());
-    if res.exit_code == 0 {
+    if res.finished() {
         ok(&line);
     } else if res.ok() {
         warn(&line);
@@ -191,7 +198,7 @@ pub fn report_result(what: &str, res: &RsyncResult) -> Result<()> {
         println!("{} {line}", error_mark());
     }
     note(format!("log: {}", res.log_path.display()));
-    if res.exit_code == 20 {
+    if res.cancelled() {
         return Err(cancelled());
     }
     if !res.ok() {

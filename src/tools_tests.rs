@@ -113,3 +113,24 @@ fn turns_on_rust_keeping_the_lists() {
     assert!(config.install.rust);
     assert_eq!(config.install.brew, names(&["bat", "ripgrep"]));
 }
+
+// A drive whose backup rules were written for rsync gets them rewritten as
+// skip and keep, one per line, with the rest of the file untouched.
+#[test]
+fn upgrades_rsync_rules_to_skip_and_keep() {
+    let old = "# my drive\n[backup]\nrules = [\n  \"- /go\",\n  \"+ /Library/Pioneer/\",\n  \"+ /Library/Pioneer/***\",\n  \"- *.iso\",\n]\n\n[install]\nbrew = [\"bat\"]\n";
+    let err = upgrade(old).unwrap_err().to_string();
+    assert!(err.contains("*.iso"), "{err}");
+    let old = old.replace("  \"- *.iso\",\n", "");
+    let out = upgrade(&old).unwrap().unwrap();
+    assert!(out.starts_with("# my drive\n[backup]\n"), "{out}");
+    assert!(out.contains("skip = [\n  \"/go\",\n]"), "{out}");
+    assert!(
+        out.contains("keep = [\n  \"/Library/Pioneer\",\n]"),
+        "{out}"
+    );
+    assert!(!out.contains("rules"), "{out}");
+    let config = crate::config::Config::parse(&out).unwrap();
+    assert_eq!(config.backup.keep, names(&["/Library/Pioneer"]));
+    assert_eq!(config.install.brew, names(&["bat"]));
+}

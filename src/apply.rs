@@ -13,8 +13,16 @@ const HOMEBREW_INSTALLER: &str =
 const RUSTUP_INSTALLER: &str = "https://sh.rustup.rs";
 const NIX_HOMEBREW_MARKER: &str = "/opt/homebrew/Library/.homebrew-is-managed-by-nix";
 
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")?
+        .to_string_lossy()
+        .split(':')
+        .map(|dir| Path::new(dir).join(name))
+        .find(|p| p.is_file())
+}
+
 pub fn find_brew() -> Option<PathBuf> {
-    crate::rsync::which("brew").or_else(|| {
+    which("brew").or_else(|| {
         ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
             .iter()
             .map(PathBuf::from)
@@ -59,9 +67,6 @@ pub fn brewfile(install: &InstallConfig) -> String {
     let mut out = String::new();
     for name in &install.brew {
         out.push_str(&format!("brew \"{name}\"\n"));
-    }
-    if install.installer_of("rsync").is_none() {
-        out.push_str("brew \"rsync\"\n");
     }
     for name in &install.cask {
         out.push_str(&format!("cask \"{name}\"\n"));
@@ -246,7 +251,7 @@ pub fn edit(e: &Env) -> Result<()> {
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_default();
     if editor.is_empty() {
-        editor = if crate::rsync::which("code").is_some() {
+        editor = if which("code").is_some() {
             "code --wait".into()
         } else {
             "vi".into()

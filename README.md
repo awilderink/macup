@@ -6,7 +6,7 @@ Back up your Mac to an external drive, bring it back after a reinstall, and keep
 - **Restore:** browse the backup as a tree and pick what to bring back. Files that are newer on the Mac are kept.
 - **Tools and apps:** `macup add firefox ripgrep` installs a Mac app and a command-line tool and remembers both, so a fresh Mac gets them back.
 
-macup is a single binary that lives on the backup drive itself, so it works on a Mac that has just been reinstalled. It is written in Rust for Apple Silicon Macs and uses rsync for files, Homebrew for tools and apps, and Apple's PhotoKit for photos that only exist in iCloud.
+macup is a single binary that lives on the backup drive itself, so it works on a Mac that has just been reinstalled. It is written in Rust for Apple Silicon Macs and copies files itself, uses Homebrew for tools and apps, and Apple's PhotoKit for photos that only exist in iCloud.
 
 ## Getting started
 
@@ -42,11 +42,12 @@ Every command has `--help`.
 
 `macup backup` copies your home folder to the drive, then your Photos library (see [Photos](#photos)).
 
-- **Only what matters is copied.** Caches, logs, `node_modules`, toolchains that install themselves again, and per-machine macOS state are skipped. From `~/Library` only `Application Support` is kept. You can add your own rules (see [Settings](#settings)).
+- **Only what matters is copied.** Caches, logs, `node_modules`, toolchains that install themselves again, and per-machine macOS state are skipped. From `~/Library` only `Application Support` is kept. You can skip more or keep something back (see [Settings](#settings)).
 - **Nothing is deleted.** Files you deleted on the Mac stay in the backup. To remove them as well, use `macup backup --mirror` (in the menu: "Clean up the backup"). It first shows how many files would go and asks.
 - **First backup from a new Mac:** if the drive already holds a backup for this Mac, macup warns first. A fresh Mac's default settings would otherwise replace your old ones, so restore what you need before backing up.
 - **Full Disk Access:** give your terminal Full Disk Access in System Settings → Privacy & Security, or protected folders in `~/Library` are left out. `macup status` tells you whether it has it.
-- **Preview:** `macup backup -n` shows what would be copied without copying anything.
+- **Copies are faithful and safe.** Each file keeps its modification and creation dates, permissions and extended attributes, and symlinks stay symlinks. A file is written next to its old copy and only swapped in once complete, so an interrupted backup never leaves a half-written file; ctrl+c stops right away and leaves the file it was copying as it was. Sockets and pipes are not copied.
+- **Preview:** `macup backup -n` shows what would be copied without copying anything, and writes the full list to its log.
 
 ## Restoring
 
@@ -86,7 +87,7 @@ rust = true
 
 git and curl come with macOS and the Command Line Tools, so they don't need listing. Each name is listed once; the same name under two lists, or a list name macup doesn't know, stops with an error that says what to fix.
 
-`macup apply` installs Homebrew if it is missing, then everything on the lists with `brew bundle`, plus GNU rsync, which backups need. It installs what is missing and leaves what is already there as it is. It always gets the current version; nothing is pinned, so two Macs can end up on different versions. It runs as you, never as root; Homebrew and some casks ask for your password themselves. The lists need the drive: `add`, `remove`, `edit` and `apply` ask you to connect it.
+`macup apply` installs Homebrew if it is missing, then everything on the lists with `brew bundle`. It installs what is missing and leaves what is already there as it is. It always gets the current version; nothing is pinned, so two Macs can end up on different versions. It runs as you, never as root; Homebrew and some casks ask for your password themselves. The lists need the drive: `add`, `remove`, `edit` and `apply` ask you to connect it.
 
 - **`macup add <name>`** works out which list a name belongs in. It looks for a cask first, then a formula, picks the first it finds and says if the other exists too; `--cask` or `--brew` decides instead. It writes the name Homebrew uses now, so `docker` is listed as `docker-desktop`. `macup add rustup` turns on `rust`. When a name is not found, you get the closest matches from Homebrew. Nothing is written unless every name was found, and the formatting and comments in `macup.toml` are kept.
 - **`macup remove <name>`** finds the name in whichever list holds it and takes it out. It also offers to uninstall it, because macup leaves things you no longer list alone. That also works for things you installed by hand with `brew`.
@@ -111,22 +112,22 @@ macup recognises its drive by the `macup.toml` at the top. When you connect a dr
 
 ## Settings
 
-`macup.toml` on the drive holds your tools and apps (see [Tools and apps](#tools-and-apps)) and your own rules and presets. Everything in it is optional:
+`macup.toml` on the drive holds your tools and apps (see [Tools and apps](#tools-and-apps)) and what to skip or keep in backups, and your restore presets. Everything in it is optional:
 
 ```toml
 [backup]
-rules = [
-  "- /go",
-  "- /code/**/target/",
-  "+ /Library/Pioneer/***",
-]
+skip = ["/go", "/code/**/target/", "*.iso"]
+keep = ["/Library/Pioneer"]
 
 [[restore.presets]]
 name = "Claude Code config"
 paths = [".claude"]
 ```
 
-- **`backup.rules`** are rsync filter rules: `- ` skips, `+ ` includes, and the first match wins. Paths starting with `/` are relative to your home folder. Your rules come after macup's built-in skips for caches and junk and before its built-in structure, so a `+` rule can bring back a folder under `~/Library`, but not the caches inside it. The built-in rules are in [`rules/`](rules).
+- **`backup.skip`** leaves things out of the backup. **`backup.keep`** brings back something macup leaves out by default. Skips always win: a kept folder still loses its caches.
+- **Patterns.** A pattern starting with `/` is a path from your home folder (`/go`). One without `/` matches a name anywhere (`node_modules`, `*.iso`). `*` matches within a name and `**` across folders (`/code/**/target/`). A trailing `/` matches folders only. A matching folder covers everything inside it.
+- **What macup leaves out by default:** `~/Library` except `Application Support`, `~/.claude` except your settings and memory, and toolchain caches like `~/.npm` and `~/.rustup`. `keep` works only there, and always takes a path starting with `/`. Caches, logs, `node_modules` and similar junk are always skipped. The built-in rules are in [`rules/builtin.toml`](rules/builtin.toml).
+- **Rules written for rsync** (`rules = ["- /go", "+ /Library/Pioneer/***"]`) still work: they are read as `skip` and `keep`, and the next `add`, `remove` or `edit` writes them that way. A `-` rule placed after a `+` rule that could reach inside it stops with a message, because with `skip` and `keep` the skip would win.
 - **`restore.presets`** appear under `p` in the restore picker.
 
 Never put SSH keys, API keys or other secrets in `macup.toml`.

@@ -1,6 +1,5 @@
 use super::*;
 use crate::guard::{Guard, precomputed, resolve};
-use crate::rsync::dry_run;
 use std::fs;
 
 pub fn fixture_env() -> (tempfile::TempDir, Env) {
@@ -17,13 +16,12 @@ fn write(path: &std::path::Path, data: &str) {
     fs::write(path, data).unwrap();
 }
 
-// Runs the real rsync with the embedded rules against a fake home folder, so a
+// Plans a backup with the built-in rules against a fake home folder, so a
 // rule edit that accidentally starts copying caches, a Photos library or
 // macOS's per-machine state fails here.
 #[test]
 fn embedded_rules_select_the_right_files() {
     let (_dir, e) = fixture_env();
-    let Ok(bin) = find_rsync() else { return };
     for f in [
         "Documents/a.txt",
         "Pictures/Photos Library.photoslibrary/database/Photos.sqlite",
@@ -40,18 +38,8 @@ fn embedded_rules_select_the_right_files() {
     ] {
         write(&e.home.join(f), "x");
     }
-    let rules = crate::rules::write_rules_file(&e.config).unwrap();
-    let mut files = vec![];
-    dry_run(
-        &bin,
-        &backup_args(&e, &Options::default(), &rules.arg()),
-        |it| {
-            if it.file() {
-                files.push(it.name);
-            }
-        },
-    )
-    .unwrap();
+    let spec = backup_spec(&e, &Options::default()).unwrap();
+    let mut files: Vec<String> = plan(&spec).files().map(|(n, _, _)| n.to_string()).collect();
     files.sort();
     assert_eq!(
         files,
@@ -101,20 +89,16 @@ fn guards_stop_non_interactive_runs_unless_yes() {
 #[test]
 fn mirror_guard_counts_what_would_be_deleted() {
     let (_dir, e) = fixture_env();
-    let Ok(bin) = find_rsync() else { return };
     write(&e.home.join("kept.txt"), "x");
     for f in ["kept.txt", "gone.txt", "old/a.txt"] {
         write(&e.backup_home().join(f), "x");
     }
-    let rules = crate::rules::write_rules_file(&e.config).unwrap();
     let g = mirror_guard(
         &e,
         &Options {
             mirror: true,
             ..Options::default()
         },
-        &bin,
-        &rules.arg(),
     )
     .unwrap()
     .expect("a guard");

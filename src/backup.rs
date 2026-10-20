@@ -1,10 +1,10 @@
 use crate::access::full_disk_access_guard;
+use crate::copy::{Job, Spec, log_path, plan};
 use crate::env::Env;
 use crate::guard::{Check, Guard, precomputed, resolve};
 use crate::photos::{self, PhotoLibrary};
-use crate::rsync::{Job, dir_arg, dry_run, find_rsync, log_path, rsync_args};
-use crate::rules::write_rules_file;
-use crate::ui::{human_bytes, plural, report_result, run_job, warn, with_spinner};
+use crate::rules::Filter;
+use crate::ui::{human_bytes, note, plural, report_result, run_job, step, warn, with_spinner};
 use crate::volume::{Lock, free_space, nearly_full};
 use anyhow::{Result, bail};
 
@@ -19,16 +19,14 @@ pub struct Options {
     pub excludes: Vec<String>,
 }
 
-pub fn backup_args(e: &Env, o: &Options, rules: &str) -> Vec<String> {
-    let mut args = rsync_args(Vec::<String>::new());
-    if o.mirror {
-        args.push("--delete".into());
-    }
-    args.extend(o.excludes.iter().map(|x| format!("--exclude={x}")));
-    args.push(format!("--filter=merge {rules}"));
-    args.push(dir_arg(&e.home));
-    args.push(dir_arg(&e.backup_home()));
-    args
+pub fn backup_spec(e: &Env, o: &Options) -> Result<Spec> {
+    Ok(Spec {
+        src: e.home.clone(),
+        dst: e.backup_home(),
+        filter: Filter::backup(&e.config, &o.excludes)?,
+        mirror: o.mirror,
+        ..Spec::default()
+    })
 }
 
 pub fn has_backed_up_before(e: &Env) -> bool {
@@ -50,21 +48,13 @@ pub fn first_backup_guard(e: &Env) -> Option<Guard> {
     })
 }
 
-pub fn mirror_guard(e: &Env, o: &Options, bin: &str, rules: &str) -> Result<Option<Guard>> {
-    let mut count = 0;
-    let mut samples = Vec::new();
-    with_spinner("Checking what mirror mode would delete…", || {
-        let mut args = backup_args(e, o, rules);
-        args.extend(["--existing".to_string(), "--ignore-existing".to_string()]);
-        dry_run(bin, &args, |it| {
-            if it.deletion() {
-                count += 1;
-                if samples.len() < 8 {
-                    samples.push(it.name);
-                }
-            }
-        })
+pub fn mirror_guard(e: &Env, o: &Options) -> Result<Option<Guard>> {
+    let spec = backup_spec(e, o)?;
+    let plan = with_spinner("Checking what mirror mode would delete…", || {
+        Ok(plan(&spec))
     })?;
+    let count = plan.deletions().count();
+    let samples: Vec<&str> = plan.deletions().take(8).collect();
     if count == 0 {
         return Ok(None);
     }
@@ -87,9 +77,6 @@ pub fn run(e: &Env, o: &Options) -> Result<()> {
     if o.no_photos && o.photos_only {
         bail!("--no-photos and --photos-only cannot be combined");
     }
-    let bin = find_rsync()?;
-    let rules = write_rules_file(&e.config)?;
-    let rules_arg = rules.arg();
     let libs: Vec<PhotoLibrary> = if o.no_photos {
         vec![]
     } else {
@@ -105,13 +92,13 @@ pub fn run(e: &Env, o: &Options) -> Result<()> {
     if !o.photos_only {
         checks.push(precomputed(first_backup_guard(e)));
         if o.mirror {
-            checks.push(Box::new(|| mirror_guard(e, o, &bin, &rules_arg)));
+            checks.push(Box::new(|| mirror_guard(e, o)));
         }
     }
     resolve(checks, o.yes || o.dry_run)?;
     let _lock = Lock::acquire(&e.lock_dir())?;
     if !o.photos_only {
-        backup_home(e, o, &bin, &rules_arg)?;
+        backup_home(e, o)?;
     }
     for lib in &libs {
         if photos_open {
@@ -119,7 +106,7 @@ pub fn run(e: &Env, o: &Options) -> Result<()> {
                 photos::archive_library(e, &lib.dst)?;
             }
         } else {
-            photos::backup_library(e, o.dry_run, &bin, lib)?;
+            photos::backup_library(e, o.dry_run, lib)?;
         }
         photos::fetch_icloud(e, lib, o.fetch_icloud, o.dry_run)?;
     }
@@ -135,33 +122,29 @@ pub fn run(e: &Env, o: &Options) -> Result<()> {
     Ok(())
 }
 
-fn backup_home(e: &Env, o: &Options, bin: &str, rules: &str) -> Result<()> {
+fn backup_home(e: &Env, o: &Options) -> Result<()> {
     std::fs::create_dir_all(e.backup_home())?;
+    let spec = backup_spec(e, o)?;
+    if o.dry_run {
+        return preview(e, &spec);
+    }
     let mut title = format!(
         "Backing up {} → {}",
         e.home.display(),
         e.backup_home().display()
     );
-    let mut args = backup_args(e, o, rules);
-    if o.dry_run {
-        title = "Previewing backup (dry run)".into();
-        args.push("--dry-run".into());
-    } else if o.mirror {
+    if o.mirror {
         title.push_str(" (mirror)");
     }
     let res = run_job(
         &title,
         &Job {
-            bin: bin.to_string(),
-            args,
+            spec,
             log_path: log_path(e, "backup"),
             strict: false,
         },
     )?;
     report_result("Backup", &res)?;
-    if o.dry_run {
-        return Ok(());
-    }
     let stamp = format!(
         "{} · {}\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M"),
@@ -172,6 +155,34 @@ fn backup_home(e: &Env, o: &Options, bin: &str, rules: &str) -> Result<()> {
     {
         warn(format!("could not record the backup time: {err}"));
     }
+    Ok(())
+}
+
+fn preview(e: &Env, spec: &Spec) -> Result<()> {
+    let plan = with_spinner("Comparing this Mac with the backup…", || Ok(plan(spec)))?;
+    let log = log_path(e, "backup-preview");
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&log, plan.describe().join("\n") + "\n")?;
+    step("Backup preview (dry run)");
+    let files = plan.files().count();
+    note(format!(
+        "{} to copy ({})",
+        plural(files, "file", "files"),
+        human_bytes(plan.bytes())
+    ));
+    let deleted = plan.deletions().count();
+    if deleted > 0 {
+        note(format!(
+            "{} to delete from the backup",
+            plural(deleted, "file or folder", "files and folders")
+        ));
+    }
+    for problem in plan.problems.iter().take(5) {
+        warn(problem);
+    }
+    note(format!("the full list is in {}", log.display()));
     Ok(())
 }
 

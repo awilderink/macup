@@ -84,9 +84,8 @@ pub fn make_library_with(
     }
 }
 
-fn fixture() -> Option<(tempfile::TempDir, Env, PhotoLibrary, String)> {
+fn fixture() -> Option<(tempfile::TempDir, Env, PhotoLibrary)> {
     let (dir, e) = fixture_env();
-    let bin = find_rsync().ok()?;
     let src = e.home.join("Pictures/Photos Library.photoslibrary");
     let assets = vec![
         (UUID_A.to_string(), "DSCF3245.JPG".to_string(), 700_000_000),
@@ -98,15 +97,15 @@ fn fixture() -> Option<(tempfile::TempDir, Env, PhotoLibrary, String)> {
     make_library_with(&src, &assets, &[&a, &b, &live]);
     let mut libs = photo_libraries(&e);
     assert_eq!(libs.len(), 1);
-    Some((dir, e, libs.remove(0), bin))
+    Some((dir, e, libs.remove(0)))
 }
 
 #[test]
 fn backup_copies_library_without_icloud_cache_and_archives_originals() {
-    let Some((_dir, e, lib, bin)) = fixture() else {
+    let Some((_dir, e, lib)) = fixture() else {
         return;
     };
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     assert!(lib.dst.join(asset_file(UUID_A, "jpeg")).exists());
     assert!(lib.dst.join("resources/derivatives/thumb.jpg").exists());
     assert!(
@@ -131,12 +130,12 @@ fn backup_copies_library_without_icloud_cache_and_archives_originals() {
 // copy follows the Mac, but the archive must keep every original it ever saw.
 #[test]
 fn originals_removed_on_the_mac_stay_in_the_archive() {
-    let Some((_dir, e, lib, bin)) = fixture() else {
+    let Some((_dir, e, lib)) = fixture() else {
         return;
     };
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     fs::remove_file(lib.src.join(asset_file(UUID_A, "jpeg"))).unwrap();
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     assert!(
         !lib.dst.join(asset_file(UUID_A, "jpeg")).exists(),
         "the library copy should follow the Mac"
@@ -151,10 +150,10 @@ fn originals_removed_on_the_mac_stay_in_the_archive() {
 
 #[test]
 fn backup_updates_an_existing_copy() {
-    let Some((_dir, e, lib, bin)) = fixture() else {
+    let Some((_dir, e, lib)) = fixture() else {
         return;
     };
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     let c = asset_file(UUID_C, "png");
     let assets = vec![
         (UUID_A.to_string(), "DSCF3245.JPG".to_string(), 700_000_000),
@@ -167,7 +166,7 @@ fn backup_updates_an_existing_copy() {
     ];
     make_library_with(&lib.src, &assets, &[&c]);
     fs::create_dir_all(lib.dst.join("resources/cpl")).unwrap();
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     assert_eq!(library::item_count(&lib.dst).unwrap(), 3);
     assert!(lib.dst.join(&c).exists(), "new original not copied");
     assert!(
@@ -180,13 +179,13 @@ fn backup_updates_an_existing_copy() {
 // discard it rather than build on a half-copied library.
 #[test]
 fn stale_staging_copy_is_discarded() {
-    let Some((_dir, e, lib, bin)) = fixture() else {
+    let Some((_dir, e, lib)) = fixture() else {
         return;
     };
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     fs::create_dir_all(lib.staging().join("originals/junk")).unwrap();
     fs::write(lib.staging().join("originals/junk/half.jpg"), "x").unwrap();
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     assert!(
         !lib.dst.join("originals/junk").exists(),
         "leftovers from the stale staging copy ended up in the backup"
@@ -198,10 +197,10 @@ fn stale_staging_copy_is_discarded() {
 // happens on a staging copy that is only swapped in at the end.
 #[test]
 fn failed_backup_leaves_the_backup_untouched() {
-    let Some((_dir, e, lib, bin)) = fixture() else {
+    let Some((_dir, e, lib)) = fixture() else {
         return;
     };
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     assert!(
         verify(&lib.dst, 5).is_err(),
         "a copy with fewer items than expected passed verification"
@@ -211,7 +210,7 @@ fn failed_backup_leaves_the_backup_untouched() {
         let _ = fs::remove_file(format!("{}{suffix}", library::db_path(&lib.src).display()));
     }
     assert!(
-        backup_library(&e, false, &bin, &lib).is_err(),
+        backup_library(&e, false, &lib).is_err(),
         "backing up an unreadable library succeeded"
     );
     assert_eq!(
@@ -227,10 +226,10 @@ fn failed_backup_leaves_the_backup_untouched() {
 
 #[test]
 fn photo_restore_never_overwrites_an_existing_library() {
-    let Some((_dir, e, lib, bin)) = fixture() else {
+    let Some((_dir, e, lib)) = fixture() else {
         return;
     };
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     let target = e.home.join("restored/Pictures");
     restore_photos(&e, &target).unwrap();
     let restored = target.join(&lib.name);
@@ -245,14 +244,14 @@ fn photo_restore_never_overwrites_an_existing_library() {
 
 #[test]
 fn originals_missing_from_mac_and_archive_count_as_icloud_only() {
-    let Some((_dir, e, lib, bin)) = fixture() else {
+    let Some((_dir, e, lib)) = fixture() else {
         return;
     };
     assert!(
         icloud_only(&e, &lib).unwrap().is_empty(),
         "originals present on the Mac are not iCloud-only"
     );
-    backup_library(&e, false, &bin, &lib).unwrap();
+    backup_library(&e, false, &lib).unwrap();
     assert!(icloud_only(&e, &lib).unwrap().is_empty());
     let c = asset_file(UUID_C, "png");
     let assets = vec![

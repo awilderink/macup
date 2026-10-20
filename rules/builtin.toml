@@ -1,0 +1,61 @@
+skip = [
+  "/Pictures/*.photoslibrary",
+  "*.tmp",
+  "*.log",
+  "node_modules",
+  ".venv",
+  "cache/",
+  ".cache",
+  ".Trash",
+  ".DS_Store",
+  ".zcompdump*",
+  "Cache",
+  "Code Cache",
+  "GPUCache",
+  "CachedData",
+  "Service Worker",
+  "Crashpad",
+  "DawnCache",
+  "GrShaderCache",
+  "/Library/Application Support/Caches",
+  "/Library/Application Support/FileProvider",
+  "/Library/Application Support/CloudDocs",
+  "/Library/Application Support/DifferentialPrivacy",
+  "/Library/Application Support/Knowledge",
+  "/Library/Application Support/Docker Desktop",
+  "/Library/Application Support/com.apple.container",
+  "/Library/Application Support/Claude/vm_bundles",
+]
+
+never_skip = [
+  "*leveldb/*.log",
+]
+
+left_out = [
+  "/.ollama",
+  "/.cargo/registry",
+  "/.cargo/git",
+  "/.npm",
+  "/.docker",
+  "/.bun",
+  "/.pnpm*",
+  "/.rustup",
+]
+
+[only]
+"/Library" = [
+  "Application Support",
+]
+"/.claude" = [
+  "projects/*/memory",
+  "settings.json",
+  "settings.local.json",
+  "CLAUDE.md",
+  "keybindings.json",
+  ".credentials.json",
+  "hooks",
+  "agents",
+  "agent-memory",
+  "skills",
+  "plugins",
+]
