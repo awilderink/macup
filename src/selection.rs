@@ -36,6 +36,10 @@ pub fn is_under(p: &str, dir: &str) -> bool {
     }
 }
 
+pub fn at_or_under(p: &str, dir: &str) -> bool {
+    p == dir || is_under(p, dir)
+}
+
 pub fn existing_paths(root: &Path, rels: &[String]) -> Vec<String> {
     rels.iter()
         .filter(|r| std::fs::symlink_metadata(root.join(r)).is_ok())

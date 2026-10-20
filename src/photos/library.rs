@@ -121,11 +121,7 @@ pub fn original_files(library: &Path) -> Result<Vec<String>> {
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            let child = if rel.is_empty() {
-                name
-            } else {
-                format!("{rel}/{name}")
-            };
+            let child = crate::selection::join_rel(&rel, &name);
             let ft = entry.file_type()?;
             if ft.is_dir() {
                 stack.push(child);

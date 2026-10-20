@@ -62,7 +62,7 @@ fn update_is_idempotent_and_never_overwrites_a_different_file() {
     make_library_with(&lib, &assets, &[&a]);
     fs::create_dir_all(lib.join(&b).parent().unwrap()).unwrap();
     fs::write(lib.join(&b), "a different photo with the same name and day").unwrap();
-    let first = update(&archive, &lib, |_, _| {}).unwrap();
+    let first = update(&archive, &lib).unwrap();
     assert_eq!(first.added, 2);
     let names: Vec<String> = load_manifest(&archive).unwrap().into_values().collect();
     assert!(
@@ -76,7 +76,7 @@ fn update_is_idempotent_and_never_overwrites_a_different_file() {
             .any(|n| n.ends_with(&suffixed(UUID_A)) || n.ends_with(&suffixed(UUID_B))),
         "{names:?}"
     );
-    let second = update(&archive, &lib, |_, _| {}).unwrap();
+    let second = update(&archive, &lib).unwrap();
     assert_eq!(
         second,
         Stats {
@@ -107,7 +107,7 @@ fn adopts_a_file_left_by_an_interrupted_run() {
     let leftover = archive.join(format!("{}/IMG_0001.JPG", day(1_700_000_000)));
     fs::create_dir_all(leftover.parent().unwrap()).unwrap();
     fs::copy(lib.join(&a), &leftover).unwrap();
-    let stats = update(&archive, &lib, |_, _| {}).unwrap();
+    let stats = update(&archive, &lib).unwrap();
     assert_eq!((stats.added, stats.total), (0, 1));
 }
 
@@ -126,7 +126,7 @@ fn archived_files_carry_the_date_the_photo_was_taken() {
         )],
         &[&a],
     );
-    update(&archive, &lib, |_, _| {}).unwrap();
+    update(&archive, &lib).unwrap();
     let file = archive.join(format!("{}/IMG_0001.JPG", day(1_500_000_000)));
     let modified = fs::metadata(file).unwrap().modified().unwrap();
     assert_eq!(

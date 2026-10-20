@@ -3,6 +3,17 @@ use crate::backup::tests::fixture_env;
 use crate::photos::tests::make_library;
 use std::fs;
 
+fn restore(e: &Env, target: &Path, paths: &[&str], mode: Existing) {
+    let req = Request {
+        paths: paths.iter().map(|p| p.to_string()).collect(),
+        target: target.to_path_buf(),
+        mode: Some(mode),
+        yes: true,
+        ..Request::default()
+    };
+    restore_paths(e, &req).unwrap();
+}
+
 #[test]
 fn clean_rel_rejects_escapes_and_normalises() {
     assert_eq!(
@@ -30,8 +41,7 @@ fn restore_modes_handle_newer_local_files() {
         .unwrap()
         .set_modified(future)
         .unwrap();
-    let docs = vec!["Documents".to_string()];
-    restore_paths(&e, &target, &docs, Some(Mode::KeepNewer), false, true).unwrap();
+    restore(&e, &target, &["Documents"], Existing::KeepNewer);
     assert_eq!(
         fs::read_to_string(target.join("Documents/a.txt")).unwrap(),
         "local and newer"
@@ -40,7 +50,7 @@ fn restore_modes_handle_newer_local_files() {
         fs::read_to_string(target.join("Documents/b.txt")).unwrap(),
         "b"
     );
-    restore_paths(&e, &target, &docs, Some(Mode::Overwrite), false, true).unwrap();
+    restore(&e, &target, &["Documents"], Existing::Overwrite);
     assert_eq!(
         fs::read_to_string(target.join("Documents/a.txt")).unwrap(),
         "backup"
@@ -60,15 +70,7 @@ fn restore_skips_an_existing_photos_library() {
     fs::write(e.backup_home().join("Pictures/holiday.jpg"), "x").unwrap();
     let current = e.home.join("Pictures/Photos Library.photoslibrary");
     make_library(&current, 2, &["originals/A/a.jpg"]);
-    restore_paths(
-        &e,
-        &e.home,
-        &["Pictures".to_string()],
-        Some(Mode::KeepNewer),
-        false,
-        true,
-    )
-    .unwrap();
+    restore(&e, &e.home, &["Pictures"], Existing::KeepNewer);
     assert!(
         !current.join("originals/O/old.jpg").exists(),
         "the backed-up library was copied into the existing one"
@@ -91,15 +93,7 @@ fn ssh_permissions_are_fixed_after_restore() {
         fs::Permissions::from_mode(0o644),
     )
     .unwrap();
-    restore_paths(
-        &e,
-        &e.home,
-        &[".ssh".to_string()],
-        Some(Mode::KeepNewer),
-        false,
-        true,
-    )
-    .unwrap();
+    restore(&e, &e.home, &[".ssh"], Existing::KeepNewer);
     let mode = |p: &str| fs::metadata(e.home.join(p)).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(".ssh"), 0o700);
     assert_eq!(mode(".ssh/id_ed25519"), 0o600);

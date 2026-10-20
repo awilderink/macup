@@ -68,7 +68,7 @@ fn tools_and_apps(e: &Env, mounted: bool) -> String {
     let mut parts: Vec<String> = install
         .lists()
         .iter()
-        .map(|(installer, list)| format!("{} {installer}", list.len()))
+        .map(|(kind, list)| format!("{} {}", list.len(), kind.key()))
         .collect();
     if install.rust {
         parts.push("rust".into());

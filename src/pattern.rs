@@ -6,6 +6,7 @@ pub struct Pattern {
     anchored: bool,
     dir_only: bool,
     whole_path: bool,
+    literal: bool,
 }
 
 impl Pattern {
@@ -31,6 +32,7 @@ impl Pattern {
         }
         Ok(Pattern {
             whole_path: glob.contains('/') || glob.contains("**"),
+            literal: !glob.contains(['*', '?', '[', '\\']),
             glob,
             anchored,
             dir_only,
@@ -45,14 +47,20 @@ impl Pattern {
         if self.dir_only && !is_dir {
             return false;
         }
+        let matches = |text: &str| {
+            if self.literal {
+                text == self.glob
+            } else {
+                glob_match(&self.glob, text)
+            }
+        };
         if self.anchored {
-            return glob_match(&self.glob, rel);
+            return matches(rel);
         }
         if !self.whole_path {
-            let name = rel.rsplit('/').next().unwrap_or(rel);
-            return glob_match(&self.glob, name);
+            return matches(rel.rsplit('/').next().unwrap_or(rel));
         }
-        tails(rel).any(|tail| glob_match(&self.glob, tail))
+        tails(rel).any(matches)
     }
 
     pub fn covers(&self, rel: &str, is_dir: bool) -> bool {

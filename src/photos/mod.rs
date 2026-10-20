@@ -6,8 +6,9 @@ use crate::copy::{Job, Spec, log_path, plan};
 use crate::env::Env;
 use crate::pattern::Pattern;
 use crate::rules::Filter;
+use crate::selection::parent_rel;
 use crate::ui::{
-    human_bytes, note, ok, plural, report_result, run_job, step, warn, warning, with_spinner,
+    human_bytes, note, ok, plural, report_result, run_job, step, warn, warning, when, with_spinner,
 };
 use crate::volume::{clonefile, rename_swap};
 use anyhow::{Context, Result, bail};
@@ -76,7 +77,7 @@ fn photo_spec(src: &Path, dst: &Path) -> Result<Spec> {
 
 pub fn archive_library(e: &Env, library: &Path) -> Result<()> {
     let stats = with_spinner("Adding originals to the archive…", || {
-        archive::update(&e.archive_dir(), library, |_, _| {})
+        archive::update(&e.archive_dir(), library)
     })
     .context("updating the originals archive")?;
     if stats.added > 0 {
@@ -193,7 +194,7 @@ pub fn icloud_only(e: &Env, lib: &PhotoLibrary) -> Result<Vec<(String, String)>>
 }
 
 fn download_key(rel: &str, uuid: &str, kind: photokit::Kind, name: &str) -> String {
-    let dir = rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let dir = parent_rel(rel);
     let ext = Path::new(name)
         .extension()
         .map(|x| x.to_string_lossy().to_lowercase())
@@ -228,15 +229,7 @@ pub fn fetch_icloud(e: &Env, lib: &PhotoLibrary, fetch: bool, dry_run: bool) -> 
         note("download them later with `macup backup --photos-only --fetch-icloud`");
         return Ok(());
     }
-    if photokit::access() == photokit::Access::NotAsked {
-        note("macOS will ask once to give your terminal access to Photos");
-        photokit::request_access()?;
-    }
-    if photokit::access() != photokit::Access::Granted {
-        bail!(
-            "no access to Photos; allow it in System Settings → Privacy & Security → Photos, then try again"
-        );
-    }
+    photokit::ensure_access()?;
     let assets = library::assets(&lib.src)?;
     let mut archive = archive::Archive::open(&e.archive_dir())?;
     let incoming = archive.dir().to_path_buf();
@@ -333,13 +326,7 @@ fn test_download(
     }) else {
         bail!("nothing archived yet to compare against; run a backup first");
     };
-    if photokit::access() == photokit::Access::NotAsked {
-        note("macOS will ask once to give your terminal access to Photos");
-        photokit::request_access()?;
-    }
-    if photokit::access() != photokit::Access::Granted {
-        bail!("no access to Photos; allow it in System Settings → Privacy & Security → Photos");
-    }
+    photokit::ensure_access()?;
     let dir = std::env::temp_dir().join(format!("macup-photokit-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let result = with_spinner(
@@ -384,10 +371,7 @@ pub fn last_photo_backup(e: &Env) -> String {
                 String::new()
             };
             match std::fs::metadata(library::db_path(&l.dst)).and_then(|m| m.modified()) {
-                Ok(t) => format!(
-                    "{label}backed up {}",
-                    chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M")
-                ),
+                Ok(t) => format!("{label}backed up {}", when(t)),
                 Err(_) => format!("{label}not backed up yet"),
             }
         })

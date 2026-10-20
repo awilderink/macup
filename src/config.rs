@@ -1,3 +1,4 @@
+use crate::selection::at_or_under;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::Path;
@@ -10,8 +11,6 @@ pub struct Config {
     pub backup: BackupConfig,
     pub restore: RestoreConfig,
     pub install: InstallConfig,
-    #[serde(skip)]
-    pub old_layout: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -22,28 +21,76 @@ pub struct InstallConfig {
     pub rust: bool,
 }
 
-pub const LISTS: [&str; 2] = ["brew", "cask"];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Brew,
+    Cask,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 2] = [Kind::Brew, Kind::Cask];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Kind::Brew => "brew",
+            Kind::Cask => "cask",
+        }
+    }
+
+    pub fn api(self) -> &'static str {
+        match self {
+            Kind::Brew => "formula",
+            Kind::Cask => "cask",
+        }
+    }
+
+    pub fn brew_flag(self) -> &'static str {
+        match self {
+            Kind::Brew => "--formula",
+            Kind::Cask => "--cask",
+        }
+    }
+
+    pub fn flag(self) -> &'static str {
+        match self {
+            Kind::Brew => "--brew",
+            Kind::Cask => "--cask",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Brew => "Homebrew formula",
+            Kind::Cask => "Homebrew cask",
+        }
+    }
+}
 
 impl InstallConfig {
-    pub fn lists(&self) -> [(&'static str, &Vec<String>); 2] {
-        [("brew", &self.brew), ("cask", &self.cask)]
+    pub fn lists(&self) -> [(Kind, &Vec<String>); 2] {
+        [(Kind::Brew, &self.brew), (Kind::Cask, &self.cask)]
+    }
+
+    pub fn has_homebrew_items(&self) -> bool {
+        self.lists().iter().any(|(_, list)| !list.is_empty())
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.rust && self.lists().iter().all(|(_, list)| list.is_empty())
+        !self.rust && !self.has_homebrew_items()
     }
 
-    pub fn installer_of(&self, name: &str) -> Option<&'static str> {
+    pub fn installer_of(&self, name: &str) -> Option<Kind> {
         let name = name.to_lowercase();
         self.lists()
             .into_iter()
             .find(|(_, list)| list.iter().any(|n| n.to_lowercase() == name))
-            .map(|(installer, _)| installer)
+            .map(|(kind, _)| kind)
     }
 
     fn validate(&self) -> Result<()> {
-        let mut seen: Vec<(String, &str)> = Vec::new();
-        for (installer, list) in self.lists() {
+        let mut seen: Vec<(String, Kind)> = Vec::new();
+        for (kind, list) in self.lists() {
+            let installer = kind.key();
             for name in list {
                 if name.contains('/') {
                     bail!("{name}: Homebrew taps other than Homebrew's own aren't supported yet");
@@ -59,14 +106,15 @@ impl InstallConfig {
                 }
                 let key = name.to_lowercase();
                 if let Some((_, first)) = seen.iter().find(|(k, _)| *k == key) {
-                    if *first == installer {
+                    if *first == kind {
                         bail!("{name} is listed twice under install.{installer}");
                     }
                     bail!(
-                        "{name} is listed under both {first} and {installer}; pick one installer"
+                        "{name} is listed under both {} and {installer}; pick one installer",
+                        first.key()
                     );
                 }
-                seen.push((key, installer));
+                seen.push((key, kind));
             }
         }
         Ok(())
@@ -84,7 +132,7 @@ fn suggest(key: &str) -> Option<&'static str> {
 
 fn check_install_keys(table: &toml::Table) -> Result<()> {
     for key in table.keys() {
-        if LISTS.contains(&key.as_str()) || key == "rust" {
+        if Kind::ALL.iter().any(|k| k.key() == key) || key == "rust" {
             continue;
         }
         if key == "mas" {
@@ -99,63 +147,6 @@ fn check_install_keys(table: &toml::Table) -> Result<()> {
 }
 
 pub const COMES_WITH_MACOS: [&str; 2] = ["curl", "git"];
-
-fn upgrade_old_layout(table: &mut toml::Table) -> Result<bool> {
-    let mut changed = table.remove("nix").is_some();
-    if let Some(toml::Value::Table(backup)) = table.get_mut("backup")
-        && let Some(rules) = backup.remove("rules")
-    {
-        let toml::Value::Array(rules) = rules else {
-            bail!("backup.rules must be a list");
-        };
-        let rules: Vec<String> = rules
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
-        let (skip, keep) = convert_rules(&rules)?;
-        let list =
-            |v: Vec<String>| toml::Value::Array(v.into_iter().map(toml::Value::String).collect());
-        backup.insert("skip".into(), list(skip));
-        backup.insert("keep".into(), list(keep));
-        changed = true;
-    }
-    if let Some(tools) = table.remove("tools") {
-        if table.contains_key("install") {
-            bail!(
-                "there is both an old [tools] and an [install] section; move everything into [install]"
-            );
-        }
-        let toml::Value::Table(mut tools) = tools else {
-            bail!("tools must be a section");
-        };
-        if let Some(apps) = tools.remove("apps") {
-            tools.insert("cask".into(), apps);
-        }
-        table.insert("install".into(), toml::Value::Table(tools));
-        changed = true;
-    }
-    let Some(toml::Value::Table(install)) = table.get_mut("install") else {
-        return Ok(changed);
-    };
-    let Some(nix) = install.remove("nix") else {
-        return Ok(changed);
-    };
-    let toml::Value::Array(nix) = nix else {
-        bail!("install.nix must be a list");
-    };
-    for name in nix.iter().filter_map(|v| v.as_str()) {
-        match name {
-            "rustup" => {
-                install.insert("rust".into(), toml::Value::Boolean(true));
-            }
-            name if COMES_WITH_MACOS.contains(&name) => {}
-            name => bail!(
-                "install.nix lists {name}, but macup no longer installs from nixpkgs; move it to brew (`macup add --brew {name}`) or delete it"
-            ),
-        }
-    }
-    Ok(true)
-}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -187,14 +178,9 @@ pub fn convert_rules(rules: &[String]) -> Result<(Vec<String>, Vec<String>)> {
             }
             continue;
         }
-        let inside_a_keep = keep.iter().find(|k| {
-            !base.starts_with('/') || {
-                let b = base.trim_end_matches('/');
-                b == k.as_str()
-                    || b.strip_prefix(k.as_str())
-                        .is_some_and(|r| r.starts_with('/'))
-            }
-        });
+        let inside_a_keep = keep
+            .iter()
+            .find(|k| !base.starts_with('/') || at_or_under(base.trim_end_matches('/'), k));
         if let Some(k) = inside_a_keep {
             bail!(
                 "backup rule {rule:?} comes after \"+ {k}\" and could skip things inside it; with skip and keep, skips always win, so move these two to skip and keep by hand"
@@ -231,16 +217,15 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Result<Config> {
-        let mut table: toml::Table = toml::from_str(text)?;
-        let old_layout = upgrade_old_layout(&mut table)?;
+        let upgraded = crate::tools::upgrade(text)?;
+        let table: toml::Table = toml::from_str(upgraded.as_deref().unwrap_or(text))?;
         if let Some(install) = table.get("install") {
             let toml::Value::Table(install) = install else {
                 bail!("install must be a section");
             };
             check_install_keys(install)?;
         }
-        let mut config: Config = table.try_into()?;
-        config.old_layout = old_layout;
+        let config: Config = table.try_into()?;
         config.validate()?;
         Ok(config)
     }

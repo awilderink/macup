@@ -21,12 +21,17 @@ pub fn check_mounted(volume: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn free_space(path: &Path) -> Result<(u64, u64)> {
+fn statfs(path: &Path) -> std::io::Result<libc::statfs> {
     let c = cstr(path)?;
     let mut st: libc::statfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(st)
+}
+
+pub fn free_space(path: &Path) -> Result<(u64, u64)> {
+    let st = statfs(path)?;
     let bsize = st.f_bsize as u64;
     Ok((st.f_bavail * bsize, st.f_blocks * bsize))
 }
@@ -48,11 +53,7 @@ pub fn unprepared_drives(volumes: &Path) -> Vec<PathBuf> {
 }
 
 fn writable_and_browsable(path: &Path) -> bool {
-    let Ok(c) = cstr(path) else { return false };
-    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
-        return false;
-    }
+    let Ok(st) = statfs(path) else { return false };
     let hidden = (libc::MNT_RDONLY | libc::MNT_DONTBROWSE) as u32;
     st.f_flags & hidden == 0
 }
@@ -84,8 +85,9 @@ pub fn nearly_full(free: u64, total: u64) -> bool {
     total > 0 && free * 10 < total
 }
 
-pub fn cstr(path: &Path) -> Result<CString> {
-    Ok(CString::new(path.as_os_str().as_bytes())?)
+pub fn cstr(path: &Path) -> std::io::Result<CString> {
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
 }
 
 pub fn clonefile(src: &Path, dst: &Path) -> Result<()> {

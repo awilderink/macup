@@ -1,5 +1,5 @@
 use crate::config::{Config, InstallConfig};
-use crate::env::Env;
+use crate::env::{Env, env_var};
 use crate::picker::shell_preset;
 use crate::selection::existing_paths;
 use crate::ui::{confirm, interactive, note, ok, step, warn};
@@ -31,8 +31,8 @@ pub fn find_brew() -> Option<PathBuf> {
 }
 
 pub fn installed(e: &Env, install: &InstallConfig) -> bool {
-    let lists = install.lists().iter().any(|(_, list)| !list.is_empty());
-    (!lists || find_brew().is_some()) && (!install.rust || e.rustup().exists())
+    (!install.has_homebrew_items() || find_brew().is_some())
+        && (!install.rust || e.rustup().exists())
 }
 
 fn run_attached(program: &str, args: &[String]) -> Result<()> {
@@ -65,11 +65,10 @@ pub fn drive_config(e: &Env) -> Result<Config> {
 
 pub fn brewfile(install: &InstallConfig) -> String {
     let mut out = String::new();
-    for name in &install.brew {
-        out.push_str(&format!("brew \"{name}\"\n"));
-    }
-    for name in &install.cask {
-        out.push_str(&format!("cask \"{name}\"\n"));
+    for (kind, list) in install.lists() {
+        for name in list {
+            out.push_str(&format!("{} \"{name}\"\n", kind.key()));
+        }
     }
     out
 }
@@ -116,7 +115,7 @@ pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Res
     }
     ok("installed");
 
-    if install.lists().iter().any(|(_, list)| !list.is_empty()) {
+    if install.has_homebrew_items() {
         step("Homebrew");
         let brew = match find_brew() {
             Some(brew) => Some(brew),
@@ -247,16 +246,15 @@ pub fn edit(e: &Env) -> Result<()> {
     drive_config(e)?;
     crate::packages::upgrade_file(e)?;
     let before = drive_config(e)?.install;
-    let mut editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_default();
-    if editor.is_empty() {
-        editor = if which("code").is_some() {
-            "code --wait".into()
-        } else {
-            "vi".into()
-        };
-    }
+    let editor = env_var("VISUAL")
+        .or_else(|| env_var("EDITOR"))
+        .unwrap_or_else(|| {
+            if which("code").is_some() {
+                "code --wait".into()
+            } else {
+                "vi".into()
+            }
+        });
     loop {
         run_attached(
             "/bin/sh",

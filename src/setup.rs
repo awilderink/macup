@@ -29,7 +29,13 @@ pub fn run(e: &Env) -> Result<()> {
     heading("Files and folders");
     if src.backup_home().exists() {
         skippable(
-            restore::run_from(&src, Request::pick(e.home.clone())),
+            restore::run_from(
+                &src,
+                Request {
+                    target: e.home.clone(),
+                    ..Request::default()
+                },
+            ),
             "`macup restore` brings files back later",
         )?;
     } else {

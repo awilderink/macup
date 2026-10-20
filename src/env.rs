@@ -19,10 +19,7 @@ impl Env {
         let home = env_path("MACUP_HOME")
             .or_else(|| env_path("HOME"))
             .unwrap_or_default();
-        let machine = std::env::var("MACUP_MACHINE")
-            .ok()
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(this_mac_name);
+        let machine = env_var("MACUP_MACHINE").unwrap_or_else(this_mac_name);
         let config = Config::load(&volume)?;
         Ok(Env::assemble(home, volume, machine, config))
     }
@@ -135,9 +132,10 @@ fn env_path(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+pub fn env_var(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
+}
+
 pub fn env_string(key: &str, fallback: &str) -> String {
-    std::env::var(key)
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| fallback.to_string())
+    env_var(key).unwrap_or_else(|| fallback.to_string())
 }

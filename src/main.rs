@@ -188,7 +188,7 @@ struct KindFlags {
 }
 
 impl KindFlags {
-    fn forced(&self) -> Result<Option<packages::Kind>> {
+    fn forced(&self) -> Result<Option<config::Kind>> {
         if self.app {
             anyhow::bail!("--app is now --cask");
         }
@@ -198,8 +198,8 @@ impl KindFlags {
             );
         }
         Ok(match (self.brew, self.cask) {
-            (true, _) => Some(packages::Kind::Brew),
-            (_, true) => Some(packages::Kind::Cask),
+            (true, _) => Some(config::Kind::Brew),
+            (_, true) => Some(config::Kind::Cask),
             _ => None,
         })
     }
@@ -234,8 +234,11 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
                 dry_run,
                 mirror,
                 yes,
-                no_photos,
-                photos_only,
+                photos: match (no_photos, photos_only) {
+                    (true, _) => backup::Photos::Skip,
+                    (_, true) => backup::Photos::Only,
+                    _ => backup::Photos::Include,
+                },
                 fetch_icloud,
                 excludes: exclude,
             },
@@ -255,8 +258,8 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
                 paths,
                 target: target.unwrap_or_else(|| e.home.clone()),
                 mode: match (replace, skip_existing) {
-                    (true, _) => Some(restore::Mode::Overwrite),
-                    (_, true) => Some(restore::Mode::OnlyMissing),
+                    (true, _) => Some(copy::Existing::Overwrite),
+                    (_, true) => Some(copy::Existing::OnlyMissing),
                     _ => None,
                 },
                 dry_run,

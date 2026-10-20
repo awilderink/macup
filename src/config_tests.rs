@@ -52,7 +52,6 @@ fn converts_old_rsync_rules() {
     );
     assert_eq!(keep, vec!["/Library/Pioneer"]);
     let c = Config::parse("[backup]\nrules = [\"- /go\", \"+ /Library/Pioneer/***\"]\n").unwrap();
-    assert!(c.old_layout);
     assert_eq!(
         (c.backup.skip, c.backup.keep),
         (
@@ -106,7 +105,6 @@ fn reads_a_drive_from_the_nix_days() {
         "[install]\nbrew = [\"bat\"]\nnix = [\"curl\", \"git\", \"rustup\"]\n\n[nix]\nenabled = true\n",
     )
     .unwrap();
-    assert!(c.old_layout);
     assert!(c.install.rust);
     assert_eq!(c.install.brew, vec!["bat"]);
     let c = Config::parse("[install]\nnix = [\"git\"]\n").unwrap();
@@ -174,6 +172,6 @@ fn both_an_old_and_a_new_section_is_an_error() {
 #[test]
 fn finds_which_list_a_name_is_in_ignoring_case() {
     let c = Config::parse("[install]\ncask = [\"Ghostty\"]\n").unwrap();
-    assert_eq!(c.install.installer_of("ghostty"), Some("cask"));
+    assert_eq!(c.install.installer_of("ghostty"), Some(Kind::Cask));
     assert_eq!(c.install.installer_of("bat"), None);
 }

@@ -95,14 +95,14 @@ fn upgrades_an_old_layout_in_place() {
     }
     let config = crate::config::Config::parse(&out).unwrap();
     assert_eq!(config.install.cask, names(&["ghostty"]));
-    assert!(config.install.rust && !config.old_layout);
+    assert!(config.install.rust);
     assert_eq!(upgrade(&out).unwrap(), None);
 }
 
 #[test]
 fn an_old_layout_still_loads() {
     let config = crate::config::Config::parse(OLD).unwrap();
-    assert!(config.old_layout && config.install.rust);
+    assert!(config.install.rust);
     assert_eq!(config.install.cask, names(&["ghostty"]));
 }
 

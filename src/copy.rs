@@ -1,13 +1,14 @@
 use crate::pattern::Pattern;
 use crate::rules::Filter;
+use crate::selection::{at_or_under, join_rel};
 use crate::ui::{human_bytes, interrupted};
+use crate::volume::cstr;
 use anyhow::Result;
 use std::collections::HashSet;
 use std::ffi::CString;
 use std::fs::{File, FileTimes, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::os::darwin::fs::FileTimesExt;
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -19,7 +20,7 @@ const CHUNK: usize = 1 << 20;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Existing {
     #[default]
-    Changed,
+    Overwrite,
     KeepNewer,
     OnlyMissing,
 }
@@ -37,11 +38,26 @@ pub struct Spec {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    Dir { rel: String, implied: bool },
-    File { rel: String, size: u64, new: bool },
-    Link { rel: String },
-    Delete { rel: String, dir: bool },
-    Cleanup { rel: String },
+    Dir {
+        rel: String,
+        implied: bool,
+    },
+    File {
+        rel: String,
+        size: u64,
+        new: bool,
+        newer_there: bool,
+    },
+    Link {
+        rel: String,
+    },
+    Delete {
+        rel: String,
+        dir: bool,
+    },
+    Cleanup {
+        rel: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -64,7 +80,7 @@ impl Plan {
 
     pub fn files(&self) -> impl Iterator<Item = (&str, u64, bool)> {
         self.actions.iter().filter_map(|a| match a {
-            Action::File { rel, size, new } => Some((rel.as_str(), *size, *new)),
+            Action::File { rel, size, new, .. } => Some((rel.as_str(), *size, *new)),
             _ => None,
         })
     }
@@ -89,18 +105,6 @@ impl Plan {
     }
 }
 
-fn join(dir: &str, name: &str) -> String {
-    if dir.is_empty() {
-        name.to_string()
-    } else {
-        format!("{dir}/{name}")
-    }
-}
-
-fn under(rel: &str, top: &str) -> bool {
-    rel == top || rel.strip_prefix(top).is_some_and(|r| r.starts_with('/'))
-}
-
 enum Reach {
     Full,
     Through,
@@ -112,9 +116,9 @@ impl Spec {
         let Some(selection) = &self.selection else {
             return Reach::Full;
         };
-        if selection.iter().any(|p| under(rel, p)) {
+        if selection.iter().any(|p| at_or_under(rel, p)) {
             Reach::Full
-        } else if is_dir && selection.iter().any(|p| under(p, rel)) {
+        } else if is_dir && selection.iter().any(|p| at_or_under(p, rel)) {
             Reach::Through
         } else {
             Reach::None
@@ -175,7 +179,7 @@ fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
     };
     let mut kept: HashSet<String> = HashSet::new();
     for (name, ft) in &entries {
-        let rel = join(dir, name);
+        let rel = join_rel(dir, name);
         let is_dir = ft.is_dir();
         let reach = spec.reach(&rel, is_dir);
         if matches!(reach, Reach::None) || !spec.wanted(&rel, is_dir) {
@@ -211,17 +215,18 @@ fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
             let Ok(here) = std::fs::symlink_metadata(spec.src.join(&rel)) else {
                 continue;
             };
+            let mut newer_there = false;
             if let Some(there) = &there
                 && there.is_file()
             {
                 let unchanged = there.len() == here.len()
                     && matches!((here.modified(), there.modified()), (Ok(a), Ok(b)) if same_time(a, b));
-                let newer_there =
+                newer_there =
                     matches!((here.modified(), there.modified()), (Ok(a), Ok(b)) if b > a);
                 let skip = match spec.existing {
                     Existing::OnlyMissing => true,
                     Existing::KeepNewer => unchanged || newer_there,
-                    Existing::Changed => unchanged,
+                    Existing::Overwrite => unchanged,
                 };
                 if skip {
                     continue;
@@ -242,6 +247,7 @@ fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
             plan.actions.push(Action::File {
                 new: there.as_ref().is_none_or(|m| !m.is_file()),
                 size: here.len(),
+                newer_there,
                 rel,
             });
         } else {
@@ -253,7 +259,7 @@ fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
     };
     for entry in dst_names.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let rel = join(dir, &name);
+        let rel = join_rel(dir, &name);
         if name.starts_with(TEMP_PREFIX) {
             plan.actions.push(Action::Cleanup { rel });
             continue;
@@ -282,7 +288,7 @@ fn delete_tree(spec: &Spec, rel: &str, plan: &mut Plan, protect: bool) -> bool {
                 continue;
             };
             let name = entry.file_name().to_string_lossy().into_owned();
-            let child = join(rel, &name);
+            let child = join_rel(rel, &name);
             let is_dir = ft.is_dir();
             if protect
                 && !name.starts_with(TEMP_PREFIX)
@@ -313,10 +319,10 @@ fn delete_tree(spec: &Spec, rel: &str, plan: &mut Plan, protect: bool) -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Progress {
-    pub transferred: String,
+    pub done: u64,
     pub percent: u64,
-    pub rate: String,
-    pub files: Option<String>,
+    pub per_second: u64,
+    pub files: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -389,16 +395,19 @@ impl Counter<'_> {
         if file_done {
             self.files += 1;
         }
-        if self.last.elapsed() < Duration::from_millis(200) && !file_done {
-            return;
+        if self.last.elapsed() >= Duration::from_millis(200) {
+            self.report();
         }
+    }
+
+    fn report(&mut self) {
         self.last = Instant::now();
         let secs = self.start.elapsed().as_secs_f64().max(0.001);
         (self.report)(&Progress {
-            transferred: human_bytes(self.done),
+            done: self.done,
             percent: (self.done * 100).checked_div(self.total).unwrap_or(100),
-            rate: format!("{}/s", human_bytes((self.done as f64 / secs) as u64)),
-            files: Some(self.files.to_string()),
+            per_second: (self.done as f64 / secs) as u64,
+            files: self.files,
         });
     }
 }
@@ -442,6 +451,7 @@ impl Job {
         std::fs::create_dir_all(&self.spec.dst)?;
         let mut dirs: Vec<(String, bool)> = Vec::new();
         let mut cancelled = false;
+        let mut buf = vec![0u8; CHUNK];
         for action in &plan.actions {
             if interrupted() {
                 cancelled = true;
@@ -456,6 +466,7 @@ impl Job {
                 Action::File { rel, .. } => copy_file(
                     &self.spec.src.join(rel),
                     &self.spec.dst.join(rel),
+                    &mut buf,
                     &mut counter,
                     &mut notes,
                 ),
@@ -492,6 +503,7 @@ impl Job {
                 }
             }
         }
+        counter.report();
         for (rel, implied) in dirs.iter().rev() {
             if *implied {
                 continue;
@@ -599,59 +611,71 @@ fn times(meta: &std::fs::Metadata) -> FileTimes {
     t
 }
 
+fn via_temp(
+    dst: &Path,
+    mut write: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let tmp = temp_path(dst);
+    let mut result = write(&tmp);
+    if result
+        .as_ref()
+        .is_err_and(|err| err.kind() == ErrorKind::AlreadyExists)
+    {
+        let _ = std::fs::remove_file(&tmp);
+        result = write(&tmp);
+    }
+    let result = result.and_then(|()| {
+        if std::fs::symlink_metadata(dst).is_ok_and(|m| m.is_dir()) {
+            std::fs::remove_dir_all(dst)?;
+        }
+        std::fs::rename(&tmp, dst)
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 fn copy_file(
     src: &Path,
     dst: &Path,
+    buf: &mut [u8],
     counter: &mut Counter,
     notes: &mut Vec<String>,
 ) -> std::io::Result<()> {
-    let tmp = temp_path(dst);
-    let _ = std::fs::remove_file(&tmp);
-    let result = (|| {
+    via_temp(dst, |tmp| {
         let mut from = File::open(src)?;
         let meta = from.metadata()?;
         let mut to = OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(&tmp)?;
-        let mut buf = vec![0u8; CHUNK];
+            .open(tmp)?;
         loop {
             if interrupted() {
                 return Err(std::io::Error::from(ErrorKind::Interrupted));
             }
-            let n = from.read(&mut buf)?;
+            let n = from.read(buf)?;
             if n == 0 {
                 break;
             }
             to.write_all(&buf[..n])?;
             counter.add(n as u64, false);
         }
-        notes.extend(copy_xattrs(src, &tmp));
+        notes.extend(copy_xattrs(src, tmp));
         to.set_permissions(meta.permissions())?;
-        to.set_times(times(&meta))?;
-        drop(to);
-        if std::fs::symlink_metadata(dst).is_ok_and(|m| m.is_dir()) {
-            std::fs::remove_dir_all(dst)?;
-        }
-        std::fs::rename(&tmp, dst)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    } else {
-        counter.add(0, true);
-    }
-    result
+        to.set_times(times(&meta))
+    })?;
+    counter.add(0, true);
+    Ok(())
 }
 
 fn copy_link(src: &Path, dst: &Path, notes: &mut Vec<String>) -> std::io::Result<()> {
     let target = std::fs::read_link(src)?;
     let meta = std::fs::symlink_metadata(src)?;
-    let tmp = temp_path(dst);
-    let _ = std::fs::remove_file(&tmp);
-    let result = (|| {
-        std::os::unix::fs::symlink(&target, &tmp)?;
-        notes.extend(copy_xattrs(src, &tmp));
+    via_temp(dst, |tmp| {
+        std::os::unix::fs::symlink(&target, tmp)?;
+        notes.extend(copy_xattrs(src, tmp));
         let (sa, na) = seconds(meta.accessed().unwrap_or(SystemTime::UNIX_EPOCH));
         let (sm, nm) = seconds(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH));
         let ts = [
@@ -664,7 +688,7 @@ fn copy_link(src: &Path, dst: &Path, notes: &mut Vec<String>) -> std::io::Result
                 tv_nsec: nm as libc::c_long,
             },
         ];
-        let c = cstr(&tmp)?;
+        let c = cstr(tmp)?;
         if unsafe {
             libc::utimensat(
                 libc::AT_FDCWD,
@@ -676,15 +700,8 @@ fn copy_link(src: &Path, dst: &Path, notes: &mut Vec<String>) -> std::io::Result
         {
             return Err(std::io::Error::last_os_error());
         }
-        if std::fs::symlink_metadata(dst).is_ok_and(|m| m.is_dir()) {
-            std::fs::remove_dir_all(dst)?;
-        }
-        std::fs::rename(&tmp, dst)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+        Ok(())
+    })
 }
 
 fn remove(path: &Path, dir: bool) -> std::io::Result<()> {
@@ -697,11 +714,6 @@ fn remove(path: &Path, dir: bool) -> std::io::Result<()> {
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
         other => other,
     }
-}
-
-fn cstr(path: &Path) -> std::io::Result<CString> {
-    CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| std::io::Error::from(ErrorKind::InvalidInput))
 }
 
 fn xattr_names(src: &CString) -> std::io::Result<Vec<CString>> {

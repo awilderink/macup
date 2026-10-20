@@ -1,5 +1,12 @@
 use super::*;
 
+fn brew_version(info_json: &[u8]) -> Option<String> {
+    match brew_found("asked", info_json) {
+        Lookup::Found { detail, .. } => Some(detail),
+        _ => None,
+    }
+}
+
 #[test]
 fn reads_the_version_from_brew_and_from_the_api() {
     let brew =

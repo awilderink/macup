@@ -24,7 +24,20 @@ pub fn access() -> Access {
     }
 }
 
-pub fn request_access() -> Result<Access> {
+pub fn ensure_access() -> Result<()> {
+    if access() == Access::NotAsked {
+        crate::ui::note("macOS will ask once to give your terminal access to Photos");
+        request_access()?;
+    }
+    if access() != Access::Granted {
+        bail!(
+            "no access to Photos; allow it in System Settings → Privacy & Security → Photos, then try again"
+        );
+    }
+    Ok(())
+}
+
+fn request_access() -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let handler = RcBlock::new(move |status: PHAuthorizationStatus| {
         let _ = tx.send(status);
@@ -37,7 +50,7 @@ pub fn request_access() -> Result<Access> {
     };
     rx.recv_timeout(Duration::from_secs(600))
         .map_err(|_| anyhow!("no answer to the Photos access request"))?;
-    Ok(access())
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

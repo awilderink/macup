@@ -1,5 +1,5 @@
 use crate::apply::{drive_config, find_brew, offer_apply};
-use crate::config::{Config, InstallConfig};
+use crate::config::{Config, InstallConfig, Kind};
 use crate::env::Env;
 use crate::search::{self, Lookup};
 use crate::ui::{confirm, interactive, note, ok, warn, with_spinner};
@@ -8,51 +8,8 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    Brew,
-    Cask,
-}
-
 const PREFERENCE: [Kind; 2] = [Kind::Cask, Kind::Brew];
 const RUST_NAMES: [&str; 2] = ["rust", "rustup"];
-
-impl Kind {
-    fn key(self) -> &'static str {
-        match self {
-            Kind::Brew => "brew",
-            Kind::Cask => "cask",
-        }
-    }
-
-    fn from_key(key: &str) -> Kind {
-        match key {
-            "cask" => Kind::Cask,
-            _ => Kind::Brew,
-        }
-    }
-
-    fn homebrew(self) -> Homebrew {
-        match self {
-            Kind::Brew => Homebrew::Formula,
-            Kind::Cask => Homebrew::Cask,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Kind::Brew => "Homebrew formula",
-            Kind::Cask => "Homebrew cask",
-        }
-    }
-
-    fn flag(self) -> &'static str {
-        match self {
-            Kind::Brew => "--brew",
-            Kind::Cask => "--cask",
-        }
-    }
-}
 
 struct ListsFile {
     path: PathBuf,
@@ -66,17 +23,14 @@ impl ListsFile {
         let path = e.drive_config();
         let src = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        Ok(match crate::tools::upgrade(&src)? {
-            Some(src) => ListsFile {
-                path,
-                src,
-                upgraded: true,
-            },
-            None => ListsFile {
-                path,
-                src,
-                upgraded: false,
-            },
+        let (src, upgraded) = match crate::tools::upgrade(&src)? {
+            Some(upgraded) => (upgraded, true),
+            None => (src, false),
+        };
+        Ok(ListsFile {
+            path,
+            src,
+            upgraded,
         })
     }
 
@@ -125,14 +79,16 @@ pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
         }
         if let Some(installer) = listed.installer_of(name) {
             ok(format!(
-                "{name} is already listed under install.{installer}"
+                "{name} is already listed under install.{}",
+                installer.key()
             ));
             continue;
         }
         let (kind, name) = kind_of(e, name, forced)?;
         if let Some(installer) = listed.installer_of(&name) {
             ok(format!(
-                "{name} is already listed under install.{installer}"
+                "{name} is already listed under install.{}",
+                installer.key()
             ));
             continue;
         }
@@ -182,9 +138,8 @@ pub fn remove(e: &Env, names: &[String]) -> Result<()> {
     let listed = file.install()?;
     let mut removed = Vec::new();
     let mut found: HashSet<String> = HashSet::new();
-    let mut uninstall: Vec<(String, Homebrew)> = Vec::new();
-    for (key, list) in listed.lists() {
-        let kind = Kind::from_key(key);
+    let mut uninstall: Vec<(String, Kind)> = Vec::new();
+    for (kind, list) in listed.lists() {
         let stored: Vec<String> = list
             .iter()
             .filter(|n| {
@@ -204,7 +159,7 @@ pub fn remove(e: &Env, names: &[String]) -> Result<()> {
             kind.key(),
             file.path.display()
         ));
-        uninstall.extend(changed.iter().map(|n| (n.clone(), kind.homebrew())));
+        uninstall.extend(changed.iter().map(|n| (n.clone(), kind)));
         found.extend(changed.iter().map(|n| n.to_lowercase()));
     }
     if !removed.is_empty() {
@@ -212,7 +167,7 @@ pub fn remove(e: &Env, names: &[String]) -> Result<()> {
     }
     removed.iter().for_each(ok);
     for name in names.iter().filter(|n| !found.contains(&n.to_lowercase())) {
-        match installed_by_brew(name, &[Homebrew::Cask, Homebrew::Formula]) {
+        match installed_by_brew(name, &PREFERENCE) {
             Some(kind) => {
                 note(format!(
                     "{name} is not in your lists, but Homebrew installed it"
@@ -229,36 +184,22 @@ pub fn check_edited(before: &InstallConfig, after: &InstallConfig) -> Result<()>
     let new: Vec<(Kind, String)> = after
         .lists()
         .into_iter()
-        .flat_map(|(key, list)| {
+        .flat_map(|(kind, list)| {
             let kept = before
                 .lists()
                 .into_iter()
-                .find(|(k, _)| *k == key)
+                .find(|(k, _)| *k == kind)
                 .map(|(_, l)| l.clone())
                 .unwrap_or_default();
             list.iter()
                 .filter(move |name| !kept.contains(name))
-                .map(move |name| (Kind::from_key(key), name.clone()))
+                .map(move |name| (kind, name.clone()))
         })
         .collect();
     if new.is_empty() {
         return Ok(());
     }
-    let results: Vec<Lookup> = with_spinner("Checking the names you added…", || {
-        Ok(std::thread::scope(|s| {
-            let handles: Vec<_> = new
-                .iter()
-                .map(|(kind, name)| s.spawn(move || lookup(name, *kind)))
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Lookup::Unknown("the lookup crashed".into()))
-                })
-                .collect()
-        }))
-    })?;
+    let results = with_spinner("Checking the names you added…", || Ok(lookup_all(&new)))?;
     let mut missing = Vec::new();
     for ((kind, name), found) in new.iter().zip(results) {
         match found {
@@ -277,43 +218,18 @@ pub fn check_edited(before: &InstallConfig, after: &InstallConfig) -> Result<()>
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Homebrew {
-    Cask,
-    Formula,
-}
-
-impl Homebrew {
-    fn flag(self) -> &'static str {
-        match self {
-            Homebrew::Cask => "--cask",
-            Homebrew::Formula => "--formula",
-        }
-    }
-
-    fn api(self) -> &'static str {
-        match self {
-            Homebrew::Cask => "cask",
-            Homebrew::Formula => "formula",
-        }
-    }
-}
-
-fn installed_by_brew(name: &str, kinds: &[Homebrew]) -> Option<Homebrew> {
-    if kinds.is_empty() {
-        return None;
-    }
+fn installed_by_brew(name: &str, kinds: &[Kind]) -> Option<Kind> {
     let brew = find_brew()?;
     kinds.iter().copied().find(|kind| {
         Command::new(&brew)
-            .args(["list", kind.flag(), name])
+            .args(["list", kind.brew_flag(), name])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
     })
 }
 
-fn offer_uninstall(items: &[(String, Homebrew)]) -> Result<()> {
+fn offer_uninstall(items: &[(String, Kind)]) -> Result<()> {
     let Some(brew) = find_brew() else {
         return Ok(());
     };
@@ -321,7 +237,7 @@ fn offer_uninstall(items: &[(String, Homebrew)]) -> Result<()> {
         if installed_by_brew(name, &[*kind]).is_none() {
             continue;
         }
-        let flag = kind.flag();
+        let flag = kind.brew_flag();
         if !interactive() || !confirm(&format!("Also uninstall {name} from this Mac?"), true)? {
             note(format!(
                 "{name} is still installed; `brew uninstall {flag} {name}` removes it"
@@ -377,13 +293,29 @@ fn describe(asked: &str, kind: Kind, lookup: &Lookup) -> String {
     name.clone()
 }
 
-fn lookup(name: &str, kind: Kind) -> Lookup {
-    lookup_brew(kind.homebrew(), name)
+fn lookup_all<S: AsRef<str> + Sync>(wanted: &[(Kind, S)]) -> Vec<Lookup> {
+    std::thread::scope(|s| {
+        let handles: Vec<_> = wanted
+            .iter()
+            .map(|(kind, name)| s.spawn(move || lookup_brew(*kind, name.as_ref())))
+            .collect();
+        handles
+            .into_iter()
+            .zip(wanted)
+            .map(|(h, (kind, _))| {
+                h.join().unwrap_or_else(|_| {
+                    Lookup::Unknown(format!("the {} lookup crashed", kind.label()))
+                })
+            })
+            .collect()
+    })
 }
 
 fn kind_of(e: &Env, name: &str, forced: Option<Kind>) -> Result<(Kind, String)> {
     if let Some(kind) = forced {
-        let found = with_spinner(&format!("Looking up {name}…"), || Ok(lookup(name, kind)))?;
+        let found = with_spinner(&format!("Looking up {name}…"), || {
+            Ok(lookup_brew(kind, name))
+        })?;
         return match &found {
             Lookup::Missing => bail!("{}", not_found(e, name, Some(kind))),
             Lookup::Unknown(why) => {
@@ -393,19 +325,9 @@ fn kind_of(e: &Env, name: &str, forced: Option<Kind>) -> Result<(Kind, String)> 
             Lookup::Found { .. } => Ok((kind, describe(name, kind, &found))),
         };
     }
+    let wanted = PREFERENCE.map(|kind| (kind, name));
     let lookups: Vec<(Kind, Lookup)> = with_spinner(&format!("Looking up {name}…"), || {
-        Ok(std::thread::scope(|s| {
-            PREFERENCE
-                .map(|kind| (kind, s.spawn(move || lookup(name, kind))))
-                .into_iter()
-                .map(|(kind, handle)| {
-                    let found = handle.join().unwrap_or_else(|_| {
-                        Lookup::Unknown(format!("the {} lookup crashed", kind.label()))
-                    });
-                    (kind, found)
-                })
-                .collect()
-        }))
+        Ok(PREFERENCE.into_iter().zip(lookup_all(&wanted)).collect())
     })?;
     match decide(&lookups) {
         Decision::Use(kind) => {
@@ -449,12 +371,12 @@ fn kind_of(e: &Env, name: &str, forced: Option<Kind>) -> Result<(Kind, String)> 
     }
 }
 
-fn lookup_brew(kind: Homebrew, name: &str) -> Lookup {
+fn lookup_brew(kind: Kind, name: &str) -> Lookup {
     let Some(brew) = find_brew() else {
         return search::brew_from_api(kind.api(), name);
     };
     let out = match Command::new(brew)
-        .args(["info", kind.flag(), "--json=v2", name])
+        .args(["info", kind.brew_flag(), "--json=v2", name])
         .output()
     {
         Ok(out) => out,
@@ -477,7 +399,7 @@ fn not_found(e: &Env, name: &str, kind: Option<Kind>) -> String {
     let wanted = |k: Kind| kind.is_none_or(|kind| kind == k);
     let similar = |k: Kind| {
         if wanted(k) {
-            search::similar_brews(&e.home, k.homebrew().api(), name)
+            search::similar_brews(&e.home, k.api(), name)
         } else {
             Vec::new()
         }

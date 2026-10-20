@@ -139,7 +139,12 @@ fn run_job_plain(heading: &str, job: &Job) -> Result<Outcome> {
         |p: &Progress| {
             if last.elapsed() >= Duration::from_secs(5) {
                 last = Instant::now();
-                println!("  {}  {}%  {}", p.transferred, p.percent, p.rate);
+                println!(
+                    "  {}  {}%  {}/s",
+                    human_bytes(p.done),
+                    p.percent,
+                    human_bytes(p.per_second)
+                );
             }
         },
         |line| println!("  {line}"),
@@ -161,14 +166,13 @@ fn run_job_with_bar(heading: &str, job: &Job) -> Result<Outcome> {
     let result = job.run(
         |p: &Progress| {
             pb.set_position(p.percent);
-            let mut info = format!("{} copied · {}", p.transferred, p.rate);
-            if let Some(files) = &p.files {
-                info.push_str(&format!(" · {files} files"));
-            }
-            info.push_str(&format!(
-                " · {}s elapsed · ctrl+c stops safely",
+            let info = format!(
+                "{} copied · {}/s · {} files · {}s elapsed · ctrl+c stops safely",
+                human_bytes(p.done),
+                human_bytes(p.per_second),
+                p.files,
                 start.elapsed().as_secs()
-            ));
+            );
             pb.set_prefix(dim(info).to_string());
         },
         |line| {
@@ -233,6 +237,12 @@ pub fn human_bytes(n: u64) -> String {
         n as f64 / div as f64,
         ['k', 'M', 'G', 'T', 'P', 'E'][exp]
     )
+}
+
+pub fn when(t: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(t)
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
 }
 
 pub fn plural(n: usize, one: &str, many: &str) -> String {

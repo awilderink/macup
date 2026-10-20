@@ -21,20 +21,19 @@ fn brew_item(info: &Value) -> &Value {
 
 pub fn brew_found(asked: &str, info_json: &[u8]) -> Lookup {
     let info: Value = serde_json::from_slice(info_json).unwrap_or_default();
+    let item = brew_item(&info);
     let name = ["token", "name"]
         .into_iter()
-        .find_map(|key| brew_item(&info).get(key).and_then(Value::as_str))
+        .find_map(|key| item.get(key).and_then(Value::as_str))
         .unwrap_or(asked)
         .to_string();
     Lookup::Found {
         name,
-        detail: brew_version(info_json).unwrap_or_default(),
+        detail: version(item).unwrap_or_default(),
     }
 }
 
-pub fn brew_version(info_json: &[u8]) -> Option<String> {
-    let info: Value = serde_json::from_slice(info_json).ok()?;
-    let item = brew_item(&info);
+fn version(item: &Value) -> Option<String> {
     let version = item
         .get("version")
         .or_else(|| item.pointer("/versions/stable"))?

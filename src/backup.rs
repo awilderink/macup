@@ -4,17 +4,26 @@ use crate::env::Env;
 use crate::guard::{Check, Guard, precomputed, resolve};
 use crate::photos::{self, PhotoLibrary};
 use crate::rules::Filter;
-use crate::ui::{human_bytes, note, plural, report_result, run_job, step, warn, with_spinner};
+use crate::ui::{
+    human_bytes, note, plural, report_result, run_job, step, warn, when, with_spinner,
+};
 use crate::volume::{Lock, free_space, nearly_full};
-use anyhow::{Result, bail};
+use anyhow::Result;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Photos {
+    #[default]
+    Include,
+    Skip,
+    Only,
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct Options {
     pub dry_run: bool,
     pub mirror: bool,
     pub yes: bool,
-    pub no_photos: bool,
-    pub photos_only: bool,
+    pub photos: Photos,
     pub fetch_icloud: bool,
     pub excludes: Vec<String>,
 }
@@ -74,10 +83,7 @@ pub fn mirror_guard(e: &Env, o: &Options) -> Result<Option<Guard>> {
 
 pub fn run(e: &Env, o: &Options) -> Result<()> {
     crate::machines::prepare(e, !o.dry_run)?;
-    if o.no_photos && o.photos_only {
-        bail!("--no-photos and --photos-only cannot be combined");
-    }
-    let libs: Vec<PhotoLibrary> = if o.no_photos {
+    let libs: Vec<PhotoLibrary> = if o.photos == Photos::Skip {
         vec![]
     } else {
         photos::photo_libraries(e)
@@ -89,7 +95,7 @@ pub fn run(e: &Env, o: &Options) -> Result<()> {
         );
     }
     let mut checks: Vec<Check> = vec![precomputed(full_disk_access_guard(e, "backup"))];
-    if !o.photos_only {
+    if o.photos != Photos::Only {
         checks.push(precomputed(first_backup_guard(e)));
         if o.mirror {
             checks.push(Box::new(|| mirror_guard(e, o)));
@@ -97,7 +103,7 @@ pub fn run(e: &Env, o: &Options) -> Result<()> {
     }
     resolve(checks, o.yes || o.dry_run)?;
     let _lock = Lock::acquire(&e.lock_dir())?;
-    if !o.photos_only {
+    if o.photos != Photos::Only {
         backup_home(e, o)?;
     }
     for lib in &libs {
@@ -147,7 +153,7 @@ fn backup_home(e: &Env, o: &Options) -> Result<()> {
     report_result("Backup", &res)?;
     let stamp = format!(
         "{} · {}\n",
-        chrono::Local::now().format("%Y-%m-%d %H:%M"),
+        when(std::time::SystemTime::now()),
         res.summary()
     );
     if let Err(err) = std::fs::create_dir_all(e.log_dir())
@@ -193,7 +199,7 @@ pub fn last_backup(e: &Env) -> String {
     match std::fs::metadata(e.backup_home()).and_then(|m| m.modified()) {
         Ok(t) => format!(
             "none from this Mac yet (the drive's copy last changed {})",
-            chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M")
+            when(t)
         ),
         Err(_) => "none yet".into(),
     }

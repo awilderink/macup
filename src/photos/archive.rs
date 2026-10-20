@@ -212,19 +212,14 @@ impl Archive {
     }
 }
 
-pub fn update(
-    archive: &Path,
-    library: &Path,
-    mut progress: impl FnMut(usize, usize),
-) -> Result<Stats> {
+pub fn update(archive: &Path, library: &Path) -> Result<Stats> {
     let mut a = Archive::open(archive)?;
     let files = library::original_files(library)?;
     let pending: Vec<&String> = files.iter().filter(|f| !a.contains(f)).collect();
     let mut stats = Stats::default();
     if !pending.is_empty() {
         let assets = library::assets(library)?;
-        for (n, rel) in pending.iter().enumerate() {
-            progress(n, pending.len());
+        for rel in &pending {
             let file = rel.rsplit('/').next().unwrap_or(rel);
             let asset = library::uuid_of(file).and_then(|u| assets.get(u));
             if let Some(bytes) = a.add_clone(rel, &library.join("originals").join(rel), asset)? {

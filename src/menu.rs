@@ -81,7 +81,7 @@ fn drive_names(drives: &[PathBuf]) -> String {
 }
 
 fn situation(e: &Env) -> Situation {
-    let drive = if e.volume.join(config::FILE_NAME).is_file() && check_mounted(&e.volume).is_ok() {
+    let drive = if e.drive_config().is_file() && check_mounted(&e.volume).is_ok() {
         Drive::Ready
     } else {
         match unprepared_drives(Path::new("/Volumes")) {

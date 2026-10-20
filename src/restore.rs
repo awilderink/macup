@@ -1,10 +1,10 @@
 use crate::access::full_disk_access_guard;
-use crate::copy::{Existing, Job, Spec, log_path};
+use crate::copy::{Action, Existing, Job, Spec, log_path};
 use crate::env::Env;
 use crate::photos;
 use crate::picker::{pick_paths, presets};
 use crate::rules::Filter;
-use crate::selection::is_under;
+use crate::selection::at_or_under;
 use crate::ui::{
     confirm_or_cancel, human_bytes, interactive, note, ok, plural, report_result, run_job, select,
     step, warn, with_spinner,
@@ -13,23 +13,6 @@ use crate::volume::Lock;
 use anyhow::{Result, bail};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    KeepNewer,
-    OnlyMissing,
-    Overwrite,
-}
-
-impl Mode {
-    fn existing(self) -> Existing {
-        match self {
-            Mode::KeepNewer => Existing::KeepNewer,
-            Mode::OnlyMissing => Existing::OnlyMissing,
-            Mode::Overwrite => Existing::Changed,
-        }
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct Plan {
@@ -44,15 +27,15 @@ pub struct Plan {
 }
 
 impl Plan {
-    pub fn bytes_for(&self, m: Mode) -> u64 {
+    pub fn bytes_for(&self, m: Existing) -> u64 {
         match m {
-            Mode::OnlyMissing => self.new_bytes,
-            Mode::KeepNewer => self.new_bytes + self.changed_bytes - self.newer_here_bytes,
-            Mode::Overwrite => self.new_bytes + self.changed_bytes,
+            Existing::OnlyMissing => self.new_bytes,
+            Existing::KeepNewer => self.new_bytes + self.changed_bytes - self.newer_here_bytes,
+            Existing::Overwrite => self.new_bytes + self.changed_bytes,
         }
     }
 
-    fn add(&mut self, name: &str, size: u64, new: bool, src: &Path, target: &Path) {
+    fn add(&mut self, name: &str, size: u64, new: bool, newer_here: bool, target: &Path) {
         if let Some(root) = library_root(name) {
             if self.skipped_libraries.iter().any(|l| l == root) {
                 return;
@@ -69,11 +52,7 @@ impl Plan {
         }
         self.changed += 1;
         self.changed_bytes += size;
-        let here = std::fs::symlink_metadata(target.join(name)).and_then(|m| m.modified());
-        let there = std::fs::symlink_metadata(src.join(name)).and_then(|m| m.modified());
-        if let (Ok(here), Ok(there)) = (here, there)
-            && here > there
-        {
+        if newer_here {
             self.newer_here += 1;
             self.newer_here_bytes += size;
             if self.newer_samples.len() < 8 {
@@ -88,10 +67,11 @@ pub fn library_root(name: &str) -> Option<&str> {
     Some(&name[..i + ".photoslibrary".len()])
 }
 
+#[derive(Default)]
 pub struct Request {
     pub paths: Vec<String>,
     pub target: PathBuf,
-    pub mode: Option<Mode>,
+    pub mode: Option<Existing>,
     pub dry_run: bool,
     pub yes: bool,
     pub photos: bool,
@@ -114,7 +94,7 @@ pub fn run_from(e: &Env, mut req: Request) -> Result<()> {
         }
         req.paths = pick_paths(&e.backup_home(), presets(&e.config))?;
     } else {
-        req.mode.get_or_insert(Mode::KeepNewer);
+        req.mode.get_or_insert(Existing::KeepNewer);
         for p in req.paths.iter_mut() {
             let clean = clean_rel(p).ok_or_else(|| anyhow::anyhow!("invalid --path {p:?}"))?;
             if std::fs::symlink_metadata(e.backup_home().join(&clean)).is_err() {
@@ -123,7 +103,7 @@ pub fn run_from(e: &Env, mut req: Request) -> Result<()> {
             *p = clean;
         }
     }
-    restore_paths(e, &req.target, &req.paths, req.mode, req.dry_run, req.yes)
+    restore_paths(e, &req)
 }
 
 pub fn clean_rel(p: &str) -> Option<String> {
@@ -148,20 +128,6 @@ pub fn require_backup(e: &Env) -> Result<()> {
     Ok(())
 }
 
-impl Request {
-    pub fn pick(target: PathBuf) -> Request {
-        Request {
-            paths: vec![],
-            target,
-            mode: None,
-            dry_run: false,
-            yes: false,
-            photos: false,
-            from: None,
-        }
-    }
-}
-
 pub fn menu(e: &Env) -> Result<()> {
     let src = crate::machines::open(e, None, true)?;
     let photos = !photos::libraries_in(&src.photos_dir()).is_empty()
@@ -179,19 +145,14 @@ pub fn menu(e: &Env) -> Result<()> {
         &src,
         Request {
             photos,
-            ..Request::pick(e.home.clone())
+            target: e.home.clone(),
+            ..Request::default()
         },
     )
 }
 
-pub fn restore_paths(
-    e: &Env,
-    target: &Path,
-    paths: &[String],
-    mode: Option<Mode>,
-    dry: bool,
-    yes: bool,
-) -> Result<()> {
+pub fn restore_paths(e: &Env, req: &Request) -> Result<()> {
+    let (target, paths) = (&req.target, &req.paths);
     let plan = with_spinner(
         &format!("Comparing the backup with {}…", target.display()),
         || plan(e, target, paths),
@@ -204,14 +165,14 @@ pub fn restore_paths(
         ));
         return Ok(());
     }
-    if dry {
+    if req.dry_run {
         return Ok(());
     }
-    let mode = match mode {
+    let mode = match req.mode {
         None if plan.changed > 0 => choose_mode(&plan)?,
         m => {
-            let m = m.unwrap_or(Mode::KeepNewer);
-            if !yes {
+            let m = m.unwrap_or(Existing::KeepNewer);
+            if !req.yes {
                 confirm_or_cancel(
                     &format!(
                         "Restore {} into {}?",
@@ -224,7 +185,7 @@ pub fn restore_paths(
             m
         }
     };
-    if mode == Mode::Overwrite && plan.newer_here > 0 && !yes {
+    if mode == Existing::Overwrite && plan.newer_here > 0 && !req.yes {
         confirm_or_cancel(
             &format!(
                 "Replace {} files that are newer on this Mac? Their newer versions will be lost.",
@@ -236,30 +197,30 @@ pub fn restore_paths(
     run_restore(e, target, paths, mode, &plan.skipped_libraries)
 }
 
-fn choose_mode(plan: &Plan) -> Result<Mode> {
+fn choose_mode(plan: &Plan) -> Result<Existing> {
     select(
         "How should existing files be handled?",
         &[
             (
                 format!(
                     "Keep files that are newer on this Mac — copies {}",
-                    human_bytes(plan.bytes_for(Mode::KeepNewer))
+                    human_bytes(plan.bytes_for(Existing::KeepNewer))
                 ),
-                Mode::KeepNewer,
+                Existing::KeepNewer,
             ),
             (
                 format!(
                     "Only add missing files, never touch existing ones — copies {}",
-                    human_bytes(plan.bytes_for(Mode::OnlyMissing))
+                    human_bytes(plan.bytes_for(Existing::OnlyMissing))
                 ),
-                Mode::OnlyMissing,
+                Existing::OnlyMissing,
             ),
             (
                 format!(
                     "Overwrite with the backup version — copies {}",
-                    human_bytes(plan.bytes_for(Mode::Overwrite))
+                    human_bytes(plan.bytes_for(Existing::Overwrite))
                 ),
-                Mode::Overwrite,
+                Existing::Overwrite,
             ),
         ],
     )
@@ -269,7 +230,7 @@ fn restore_spec(
     e: &Env,
     target: &Path,
     paths: &[String],
-    mode: Mode,
+    mode: Existing,
     skip: &[String],
 ) -> Result<Spec> {
     let skip: Vec<String> = skip.iter().map(|lib| format!("/{lib}/")).collect();
@@ -278,17 +239,24 @@ fn restore_spec(
         dst: target.to_path_buf(),
         filter: Filter::skipping(&skip)?,
         selection: Some(paths.to_vec()),
-        existing: mode.existing(),
+        existing: mode,
         ..Spec::default()
     })
 }
 
 fn plan(e: &Env, target: &Path, paths: &[String]) -> Result<Plan> {
-    let spec = restore_spec(e, target, paths, Mode::Overwrite, &[])?;
+    let spec = restore_spec(e, target, paths, Existing::Overwrite, &[])?;
     let mut plan = Plan::default();
-    let src = e.backup_home();
-    for (name, size, new) in crate::copy::plan(&spec).files() {
-        plan.add(name, size, new, &src, target);
+    for action in crate::copy::plan(&spec).actions {
+        if let Action::File {
+            rel,
+            size,
+            new,
+            newer_there,
+        } = action
+        {
+            plan.add(&rel, size, new, newer_there, target);
+        }
     }
     Ok(plan)
 }
@@ -328,14 +296,14 @@ fn print_plan(p: &Plan) {
 }
 
 fn touches(paths: &[String], dir: &str) -> bool {
-    paths.iter().any(|p| p == dir || is_under(p, dir))
+    paths.iter().any(|p| at_or_under(p, dir))
 }
 
 fn run_restore(
     e: &Env,
     target: &Path,
     paths: &[String],
-    mode: Mode,
+    mode: Existing,
     skip: &[String],
 ) -> Result<()> {
     if touches(paths, "Library")
@@ -364,7 +332,7 @@ fn run_restore(
 }
 
 pub fn shell_restore(e: &Env, paths: &[String]) -> Result<()> {
-    run_restore(e, &e.home, paths, Mode::KeepNewer, &[])
+    run_restore(e, &e.home, paths, Existing::KeepNewer, &[])
 }
 
 fn fix_ssh_permissions(dir: &Path) {
