@@ -17,7 +17,7 @@ fn clean_rel_rejects_escapes_and_normalises() {
 #[test]
 fn restore_modes_handle_newer_local_files() {
     let (_dir, e) = fixture_env();
-    if find_rsync(&e).is_err() {
+    if find_rsync().is_err() {
         return;
     }
     fs::create_dir_all(e.backup_home().join("Documents")).unwrap();
@@ -56,7 +56,7 @@ fn restore_modes_handle_newer_local_files() {
 #[test]
 fn restore_skips_an_existing_photos_library() {
     let (_dir, e) = fixture_env();
-    if find_rsync(&e).is_err() {
+    if find_rsync().is_err() {
         return;
     }
     let backed_up = e
@@ -89,7 +89,7 @@ fn restore_skips_an_existing_photos_library() {
 #[test]
 fn ssh_permissions_are_fixed_after_restore() {
     let (_dir, e) = fixture_env();
-    if find_rsync(&e).is_err() {
+    if find_rsync().is_err() {
         return;
     }
     fs::create_dir_all(e.backup_home().join(".ssh")).unwrap();

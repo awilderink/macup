@@ -10,9 +10,8 @@ pub struct Config {
     pub backup: BackupConfig,
     pub restore: RestoreConfig,
     pub install: InstallConfig,
-    pub nix: NixConfig,
     #[serde(skip)]
-    pub old_tools_section: bool,
+    pub old_layout: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -20,22 +19,18 @@ pub struct Config {
 pub struct InstallConfig {
     pub brew: Vec<String>,
     pub cask: Vec<String>,
-    pub nix: Vec<String>,
+    pub rust: bool,
 }
 
-pub const INSTALLERS: [&str; 3] = ["brew", "cask", "nix"];
+pub const LISTS: [&str; 2] = ["brew", "cask"];
 
 impl InstallConfig {
-    pub fn lists(&self) -> [(&'static str, &Vec<String>); 3] {
-        [
-            ("brew", &self.brew),
-            ("cask", &self.cask),
-            ("nix", &self.nix),
-        ]
+    pub fn lists(&self) -> [(&'static str, &Vec<String>); 2] {
+        [("brew", &self.brew), ("cask", &self.cask)]
     }
 
     pub fn is_empty(&self) -> bool {
-        self.lists().iter().all(|(_, list)| list.is_empty())
+        !self.rust && self.lists().iter().all(|(_, list)| list.is_empty())
     }
 
     pub fn installer_of(&self, name: &str) -> Option<&'static str> {
@@ -50,11 +45,17 @@ impl InstallConfig {
         let mut seen: Vec<(String, &str)> = Vec::new();
         for (installer, list) in self.lists() {
             for name in list {
-                if name.trim().is_empty() {
-                    bail!("install.{installer} has an empty name");
-                }
-                if installer != "nix" && name.contains('/') {
+                if name.contains('/') {
                     bail!("{name}: Homebrew taps other than Homebrew's own aren't supported yet");
+                }
+                if name.is_empty()
+                    || !name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "._+@-".contains(c))
+                {
+                    bail!(
+                        "install.{installer} has {name:?}, which is not a Homebrew name (letters, digits and . _ + @ - only)"
+                    );
                 }
                 let key = name.to_lowercase();
                 if let Some((_, first)) = seen.iter().find(|(k, _)| *k == key) {
@@ -75,15 +76,15 @@ impl InstallConfig {
 fn suggest(key: &str) -> Option<&'static str> {
     match key {
         "apps" | "app" | "casks" => Some("cask"),
-        "brews" | "formula" | "formulae" | "formulas" => Some("brew"),
-        "nixpkgs" | "packages" | "tools" | "tool" => Some("nix"),
+        "brews" | "formula" | "formulae" | "formulas" | "tools" => Some("brew"),
+        "rustup" => Some("rust"),
         _ => None,
     }
 }
 
 fn check_install_keys(table: &toml::Table) -> Result<()> {
     for key in table.keys() {
-        if INSTALLERS.contains(&key.as_str()) {
+        if LISTS.contains(&key.as_str()) || key == "rust" {
             continue;
         }
         if key == "mas" {
@@ -91,36 +92,52 @@ fn check_install_keys(table: &toml::Table) -> Result<()> {
         }
         match suggest(key) {
             Some(right) => bail!("[install] has no {key:?}; did you mean {right:?}?"),
-            None => bail!("[install] has no {key:?}; it takes brew, cask and nix"),
+            None => bail!("[install] has no {key:?}; it takes brew, cask and rust"),
         }
     }
     Ok(())
 }
 
-fn upgrade_tools_section(table: &mut toml::Table) -> Result<bool> {
-    let Some(tools) = table.remove("tools") else {
-        return Ok(false);
-    };
-    if table.contains_key("install") {
-        bail!(
-            "there is both an old [tools] and an [install] section; move everything into [install]"
-        );
-    }
-    let toml::Value::Table(mut tools) = tools else {
-        bail!("tools must be a section");
-    };
-    if let Some(apps) = tools.remove("apps") {
-        tools.insert("cask".into(), apps);
-    }
-    table.insert("install".into(), toml::Value::Table(tools));
-    Ok(true)
-}
+pub const COMES_WITH_MACOS: [&str; 2] = ["curl", "git"];
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct NixConfig {
-    pub enabled: Option<bool>,
-    pub config: Option<String>,
+fn upgrade_old_layout(table: &mut toml::Table) -> Result<bool> {
+    let mut changed = table.remove("nix").is_some();
+    if let Some(tools) = table.remove("tools") {
+        if table.contains_key("install") {
+            bail!(
+                "there is both an old [tools] and an [install] section; move everything into [install]"
+            );
+        }
+        let toml::Value::Table(mut tools) = tools else {
+            bail!("tools must be a section");
+        };
+        if let Some(apps) = tools.remove("apps") {
+            tools.insert("cask".into(), apps);
+        }
+        table.insert("install".into(), toml::Value::Table(tools));
+        changed = true;
+    }
+    let Some(toml::Value::Table(install)) = table.get_mut("install") else {
+        return Ok(changed);
+    };
+    let Some(nix) = install.remove("nix") else {
+        return Ok(changed);
+    };
+    let toml::Value::Array(nix) = nix else {
+        bail!("install.nix must be a list");
+    };
+    for name in nix.iter().filter_map(|v| v.as_str()) {
+        match name {
+            "rustup" => {
+                install.insert("rust".into(), toml::Value::Boolean(true));
+            }
+            name if COMES_WITH_MACOS.contains(&name) => {}
+            name => bail!(
+                "install.nix lists {name}, but macup no longer installs from nixpkgs; move it to brew (`macup add --brew {name}`) or delete it"
+            ),
+        }
+    }
+    Ok(true)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -153,7 +170,7 @@ impl Config {
 
     pub fn parse(text: &str) -> Result<Config> {
         let mut table: toml::Table = toml::from_str(text)?;
-        let old_tools_section = upgrade_tools_section(&mut table)?;
+        let old_layout = upgrade_old_layout(&mut table)?;
         if let Some(install) = table.get("install") {
             let toml::Value::Table(install) = install else {
                 bail!("install must be a section");
@@ -161,7 +178,7 @@ impl Config {
             check_install_keys(install)?;
         }
         let mut config: Config = table.try_into()?;
-        config.old_tools_section = old_tools_section;
+        config.old_layout = old_layout;
         config.validate()?;
         Ok(config)
     }

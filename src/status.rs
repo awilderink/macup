@@ -1,9 +1,7 @@
 use crate::access::{full_disk_access, terminal_name};
-use crate::env::{Env, Nix};
-use crate::nix::find_nix;
+use crate::env::Env;
 use crate::ui::{human_bytes, title, warning};
 use crate::volume::{check_mounted, free_space, nearly_full};
-use std::path::Path;
 
 pub fn show(e: &Env) {
     let row = |label: &str, value: String| println!("{} {value}", title(format!("{label:<14}")));
@@ -56,34 +54,27 @@ pub fn show(e: &Env) {
             .to_string(),
         },
     );
-    row(
-        "Tools & apps",
-        match e.nix {
-            Nix::On => tools_and_apps(e, mounted),
-            Nix::OffByConfig => "not managed by macup (Nix is off in macup.toml)".into(),
-            Nix::Absent => {
-                "not managed by macup (Nix is not installed and macup.toml lists nothing)".into()
-            }
-        },
-    );
+    row("Tools & apps", tools_and_apps(e, mounted));
 }
 
 fn tools_and_apps(e: &Env, mounted: bool) -> String {
     let install = &e.config.install;
-    let mut v = match e.own_flake() {
-        Some(dir) => format!("from your own flake at {}", dir.display()),
-        None if !mounted => {
-            return warning("connect the backup drive, which lists them").to_string();
-        }
-        None if install.is_empty() => "none listed yet — `macup add <name>` adds one".into(),
-        None => install
-            .lists()
-            .iter()
-            .map(|(installer, list)| format!("{} {installer}", list.len()))
-            .collect::<Vec<_>>()
-            .join(" · "),
-    };
-    if find_nix().is_none() || !Path::new("/run/current-system").exists() {
+    if !mounted {
+        return warning("connect the backup drive, which lists them").to_string();
+    }
+    if install.is_empty() {
+        return "none listed yet — `macup add <name>` adds one".into();
+    }
+    let mut parts: Vec<String> = install
+        .lists()
+        .iter()
+        .map(|(installer, list)| format!("{} {installer}", list.len()))
+        .collect();
+    if install.rust {
+        parts.push("rust".into());
+    }
+    let mut v = parts.join(" · ");
+    if !crate::apply::installed(e, install) {
         v.push_str(&warning(" · not installed yet — run macup setup").to_string());
     }
     v

@@ -196,7 +196,7 @@ pub fn restore_paths(
     dry: bool,
     yes: bool,
 ) -> Result<()> {
-    let bin = find_rsync(e)?;
+    let bin = find_rsync()?;
     let plan = with_spinner(
         &format!("Comparing the backup with {}…", target.display()),
         || plan(e, &bin, target, paths),
@@ -381,7 +381,7 @@ fn run_restore(
 }
 
 pub fn shell_restore(e: &Env, paths: &[String]) -> Result<()> {
-    let bin = find_rsync(e)?;
+    let bin = find_rsync()?;
     run_restore(e, &bin, &e.home, paths, Mode::KeepNewer, &[])
 }
 

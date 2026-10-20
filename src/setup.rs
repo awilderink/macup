@@ -14,16 +14,17 @@ pub fn run(e: &Env) -> Result<()> {
         );
     }
     let src = crate::machines::open(e, None, true)?;
-    let steps = if e.nix_enabled() { 3 } else { 2 };
+    let tools = !e.config.install.is_empty();
+    let steps = if tools { 3 } else { 2 };
     let mut done = 0;
     let mut heading = |label: &str| {
         done += 1;
         println!();
         println!("{}", title(format!("Step {done} of {steps} · {label}")));
     };
-    if e.nix_enabled() {
-        heading("Tools, apps and settings");
-        crate::nix::install_and_apply(e, false, false, "macup setup")?;
+    if tools {
+        heading("Tools and apps");
+        crate::apply::install_and_apply(e, false, false, "macup setup")?;
     }
     heading("Files and folders");
     if src.backup_home().exists() {

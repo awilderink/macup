@@ -3,24 +3,45 @@ use toml_edit::{Array, DocumentMut, Item, Key, Table, Value};
 
 pub fn upgrade(src: &str) -> Result<Option<String>> {
     let mut doc: DocumentMut = src.parse().context("macup.toml is not valid TOML")?;
-    if doc.contains_key("install") {
-        return Ok(None);
-    }
-    let Some(mut tools) = doc.remove("tools") else {
-        return Ok(None);
-    };
-    if let Some(table) = tools.as_table_mut() {
-        if let Some((key, apps)) = table.remove_entry("apps") {
-            let cask = Key::new("cask").with_leaf_decor(key.leaf_decor().clone());
-            table.insert_formatted(&cask, apps);
-        }
-    } else if let Some(table) = tools.as_table_like_mut()
-        && let Some(apps) = table.remove("apps")
+    let mut changed = doc.remove("nix").is_some();
+    if !doc.contains_key("install")
+        && let Some(mut tools) = doc.remove("tools")
     {
-        table.insert("cask", apps);
+        if let Some(table) = tools.as_table_mut() {
+            if let Some((key, apps)) = table.remove_entry("apps") {
+                let cask = Key::new("cask").with_leaf_decor(key.leaf_decor().clone());
+                table.insert_formatted(&cask, apps);
+            }
+        } else if let Some(table) = tools.as_table_like_mut()
+            && let Some(apps) = table.remove("apps")
+        {
+            table.insert("cask", apps);
+        }
+        doc.insert("install", tools);
+        changed = true;
     }
-    doc.insert("install", tools);
-    Ok(Some(doc.to_string()))
+    if let Some(install) = doc.get_mut("install").and_then(Item::as_table_like_mut)
+        && let Some(nix) = install.remove("nix")
+    {
+        let rustup = nix
+            .as_array()
+            .is_some_and(|list| list.iter().any(|v| v.as_str() == Some("rustup")));
+        if rustup {
+            install.insert("rust", toml_edit::value(true));
+        }
+        changed = true;
+    }
+    Ok(changed.then(|| doc.to_string()))
+}
+
+pub fn set_rust(src: &str) -> Result<String> {
+    let mut doc: DocumentMut = src.parse().context("macup.toml is not valid TOML")?;
+    doc.entry("install")
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_like_mut()
+        .ok_or_else(|| anyhow!("install in macup.toml must be a section"))?
+        .insert("rust", toml_edit::value(true));
+    Ok(doc.to_string())
 }
 
 pub fn edit(src: &str, key: &str, names: &[String], add: bool) -> Result<(String, Vec<String>)> {

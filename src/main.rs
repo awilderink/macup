@@ -1,4 +1,5 @@
 mod access;
+mod apply;
 mod backup;
 mod config;
 mod env;
@@ -6,7 +7,6 @@ mod errors;
 mod guard;
 mod machines;
 mod menu;
-mod nix;
 mod packages;
 mod photos;
 mod picker;
@@ -116,15 +116,15 @@ enum Command {
     Setup,
     #[command(
         visible_alias = "install",
-        about = "Install your tools and apps and apply your settings (installs Command Line Tools and Nix first when missing)"
+        about = "Install the tools and apps listed in macup.toml (installs Command Line Tools and Homebrew first when missing)"
     )]
     Apply {
-        #[arg(long, help = "update all tools to their latest versions first")]
-        update: bool,
         #[arg(
             long,
-            help = "only check that the configuration builds; changes nothing"
+            help = "also update Homebrew and upgrade everything listed, and Rust, to the latest versions"
         )]
+        update: bool,
+        #[arg(long, help = "only show what is not installed yet; changes nothing")]
         check: bool,
     },
     #[command(
@@ -178,7 +178,7 @@ struct KindFlags {
     brew: bool,
     #[arg(long, help = "only look for a Homebrew cask (install.cask)")]
     cask: bool,
-    #[arg(long, help = "only look for a nixpkgs package (install.nix)")]
+    #[arg(long, hide = true)]
     nix: bool,
     #[arg(long, hide = true)]
     app: bool,
@@ -191,13 +191,14 @@ impl KindFlags {
         if self.app {
             anyhow::bail!("--app is now --cask");
         }
-        if self.tool {
-            anyhow::bail!("--tool is now --nix");
+        if self.tool || self.nix {
+            anyhow::bail!(
+                "macup no longer installs from nixpkgs; use --brew for a Homebrew formula"
+            );
         }
-        Ok(match (self.brew, self.cask, self.nix) {
-            (true, _, _) => Some(packages::Kind::Brew),
-            (_, true, _) => Some(packages::Kind::Cask),
-            (_, _, true) => Some(packages::Kind::Nix),
+        Ok(match (self.brew, self.cask) {
+            (true, _) => Some(packages::Kind::Brew),
+            (_, true) => Some(packages::Kind::Cask),
             _ => None,
         })
     }
@@ -218,11 +219,6 @@ fn main() {
 
 fn dispatch(e: &Env, command: Command) -> Result<()> {
     match command {
-        Command::Apply { .. } | Command::Add { .. } | Command::Remove { .. } | Command::Edit
-            if !e.nix_enabled() =>
-        {
-            nix::require_nix(e)
-        }
         Command::Backup {
             dry_run,
             mirror,
@@ -269,10 +265,10 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
             },
         ),
         Command::Setup => setup::run(e),
-        Command::Apply { update, check } => nix::apply(e, update, check),
+        Command::Apply { update, check } => apply::apply(e, update, check),
         Command::Add { kind, names } => packages::add(e, &names, kind.forced()?),
         Command::Remove { names } => packages::remove(e, &names),
-        Command::Edit => nix::edit(e),
+        Command::Edit => apply::edit(e),
         Command::Init { drive } => config::init_drive(&drive),
         Command::Status {
             photos,

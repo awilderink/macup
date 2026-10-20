@@ -1,0 +1,295 @@
+use crate::config::{Config, InstallConfig};
+use crate::env::Env;
+use crate::picker::shell_preset;
+use crate::selection::existing_paths;
+use crate::ui::{confirm, interactive, note, ok, step, warn};
+use crate::volume::check_mounted;
+use anyhow::{Context, Result, anyhow, bail};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const HOMEBREW_INSTALLER: &str =
+    "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
+const RUSTUP_INSTALLER: &str = "https://sh.rustup.rs";
+const NIX_HOMEBREW_MARKER: &str = "/opt/homebrew/Library/.homebrew-is-managed-by-nix";
+
+pub fn find_brew() -> Option<PathBuf> {
+    crate::rsync::which("brew").or_else(|| {
+        ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|p| p.exists())
+    })
+}
+
+pub fn installed(e: &Env, install: &InstallConfig) -> bool {
+    let lists = install.lists().iter().any(|(_, list)| !list.is_empty());
+    (!lists || find_brew().is_some()) && (!install.rust || e.rustup().exists())
+}
+
+fn run_attached(program: &str, args: &[String]) -> Result<()> {
+    note(format!("$ {program} {}", args.join(" ")));
+    let status = Command::new(program)
+        .args(args)
+        .status()
+        .with_context(|| format!("starting {program}"))?;
+    if !status.success() {
+        bail!("{program} exited with {status}");
+    }
+    Ok(())
+}
+
+fn path_str(p: &Path) -> String {
+    p.display().to_string()
+}
+
+pub fn drive_config(e: &Env) -> Result<Config> {
+    check_mounted(&e.volume)?;
+    if !e.drive_config().is_file() {
+        bail!(
+            "{} has no {}, which lists your tools and apps",
+            e.volume.display(),
+            crate::config::FILE_NAME
+        );
+    }
+    Config::load(&e.volume)
+}
+
+pub fn brewfile(install: &InstallConfig) -> String {
+    let mut out = String::new();
+    for name in &install.brew {
+        out.push_str(&format!("brew \"{name}\"\n"));
+    }
+    if install.installer_of("rsync").is_none() {
+        out.push_str("brew \"rsync\"\n");
+    }
+    for name in &install.cask {
+        out.push_str(&format!("cask \"{name}\"\n"));
+    }
+    out
+}
+
+fn write_brewfile(e: &Env, install: &InstallConfig) -> Result<PathBuf> {
+    let dir = e.cache_dir();
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let file = dir.join("Brewfile");
+    std::fs::write(&file, brewfile(install))
+        .with_context(|| format!("writing {}", file.display()))?;
+    Ok(file)
+}
+
+pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
+    install_and_apply(e, update, check, "macup apply")?;
+    if check {
+        return Ok(());
+    }
+    offer_shell_restore(e)
+}
+
+pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Result<()> {
+    let install = drive_config(e)?.install;
+    if install.is_empty() {
+        note(format!(
+            "{} lists no tools or apps, so there is nothing to install",
+            e.drive_config().display()
+        ));
+        return Ok(());
+    }
+    step("Apple Command Line Tools");
+    if !Command::new("xcode-select")
+        .arg("-p")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        if check {
+            note("not installed yet; `macup apply` starts Apple's installer");
+            return Ok(());
+        }
+        let _ = run_attached("xcode-select", &["--install".into()]);
+        bail!("finish Apple's Command Line Tools installer, then run `{rerun}` again");
+    }
+    ok("installed");
+
+    if install.lists().iter().any(|(_, list)| !list.is_empty()) {
+        step("Homebrew");
+        let brew = match find_brew() {
+            Some(brew) => Some(brew),
+            None if check => {
+                note("not installed yet; `macup apply` installs it");
+                None
+            }
+            None => Some(install_homebrew(rerun)?),
+        };
+        if let Some(brew) = brew {
+            ok(path_str(&brew));
+            step("Tools and apps");
+            let file = path_str(&write_brewfile(e, &install)?);
+            let brew = path_str(&brew);
+            if check {
+                let out = Command::new(&brew)
+                    .args(["bundle", "check", "--verbose", &format!("--file={file}")])
+                    .output()
+                    .with_context(|| format!("starting {brew}"))?;
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                text.lines()
+                    .filter_map(|l| l.trim().strip_prefix("→ "))
+                    .for_each(note);
+                if out.status.success() {
+                    ok("everything listed is installed");
+                } else {
+                    note("`macup apply` installs what is missing");
+                }
+            } else {
+                if update {
+                    run_attached(&brew, &["update".into()]).context("updating Homebrew failed")?;
+                }
+                let upgrade = if update { "--upgrade" } else { "--no-upgrade" };
+                run_attached(
+                    &brew,
+                    &[
+                        "bundle".into(),
+                        "install".into(),
+                        upgrade.into(),
+                        format!("--file={file}"),
+                    ],
+                )
+                .context("Homebrew could not install everything")?;
+                ok("tools and apps installed");
+            }
+        }
+    }
+
+    if install.rust {
+        step("Rust");
+        let rustup = e.rustup();
+        if !rustup.exists() {
+            if check {
+                note("not installed yet; `macup apply` installs rustup and the stable toolchain");
+                return Ok(());
+            }
+            run_attached(
+                "/bin/sh",
+                &[
+                    "-c".into(),
+                    format!("/usr/bin/curl --proto '=https' --tlsv1.2 -sSf {RUSTUP_INSTALLER} | /bin/sh -s -- -y --no-modify-path --default-toolchain stable"),
+                ],
+            )
+            .context("installing rustup failed")?;
+        } else if update && !check {
+            run_attached(&path_str(&rustup), &["update".into()]).context("updating Rust failed")?;
+        }
+        ok(path_str(&rustup));
+    }
+    Ok(())
+}
+
+fn install_homebrew(rerun: &str) -> Result<PathBuf> {
+    if Path::new(NIX_HOMEBREW_MARKER).exists() {
+        bail!(
+            "Homebrew in /opt/homebrew is still the one Nix set up; finish moving this Mac off Nix, then run `{rerun}` again"
+        );
+    }
+    note("installing Homebrew with its official installer");
+    run_attached(
+        "/bin/bash",
+        &[
+            "-c".into(),
+            format!("/bin/bash -c \"$(/usr/bin/curl -fsSL {HOMEBREW_INSTALLER})\""),
+        ],
+    )
+    .context("installing Homebrew failed")?;
+    find_brew().ok_or_else(|| {
+        anyhow!("Homebrew was installed but cannot be found — open a new terminal and run `{rerun}` again")
+    })
+}
+
+fn offer_shell_restore(e: &Env) -> Result<()> {
+    if e.home.join(".oh-my-zsh").exists() {
+        return Ok(());
+    }
+    let Ok(src) = crate::machines::open(e, None, false) else {
+        return Ok(());
+    };
+    let paths = existing_paths(&src.backup_home(), &shell_preset().paths);
+    if paths.is_empty() {
+        return Ok(());
+    }
+    if !interactive() {
+        note(format!(
+            "restore your shell config with: macup restore --path {}",
+            paths.join(" --path ")
+        ));
+        return Ok(());
+    }
+    if !confirm(
+        &format!(
+            "Restore your shell config from the backup? ({})",
+            paths.join(", ")
+        ),
+        true,
+    )? {
+        return Ok(());
+    }
+    crate::restore::shell_restore(&src, &paths)
+}
+
+pub fn edit(e: &Env) -> Result<()> {
+    drive_config(e)?;
+    crate::packages::upgrade_file(e)?;
+    let before = drive_config(e)?.install;
+    let mut editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_default();
+    if editor.is_empty() {
+        editor = if crate::rsync::which("code").is_some() {
+            "code --wait".into()
+        } else {
+            "vi".into()
+        };
+    }
+    loop {
+        run_attached(
+            "/bin/sh",
+            &[
+                "-c".into(),
+                format!("{editor} \"$1\""),
+                "macup-edit".into(),
+                path_str(&e.drive_config()),
+            ],
+        )?;
+        let checked = drive_config(e)
+            .and_then(|after| crate::packages::check_edited(&before, &after.install));
+        match checked {
+            Ok(()) => break,
+            Err(err) if interactive() => {
+                warn(format!("{err:#}"));
+                if !confirm("Open macup.toml again to fix it?", true)? {
+                    return Err(err);
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    offer_apply(e)
+}
+
+pub fn offer_apply(e: &Env) -> Result<()> {
+    if !interactive() {
+        note("run `macup apply` to make the change take effect");
+        return Ok(());
+    }
+    if !confirm("Apply the change now?", true)? {
+        note("run `macup apply` later to make the change take effect");
+        return Ok(());
+    }
+    apply(e, false, false)
+}
+
+#[cfg(test)]
+#[path = "apply_tests.rs"]
+mod tests;

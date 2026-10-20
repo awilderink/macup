@@ -73,7 +73,7 @@ fn the_real_situation_is_cheap_to_read_and_consistent() {
     let s = situation(&e);
     if let Some((a, _)) = recommend(&s) {
         assert!(
-            options(&e, &s).iter().any(|(_, o)| *o == a),
+            options(&s).iter().any(|(_, o)| *o == a),
             "recommended {a:?} is not in the menu"
         );
     }

@@ -1,6 +1,6 @@
 use crate::env::Env;
 use crate::volume::{check_mounted, unprepared_drives};
-use crate::{backup, config, errors, nix, packages, restore, setup, status, ui};
+use crate::{apply, backup, config, errors, packages, restore, setup, status, ui};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -97,7 +97,7 @@ fn situation(e: &Env) -> Situation {
         .and_then(|m| m.modified())
         .ok()
         .map(|t| SystemTime::now().duration_since(t).unwrap_or_default());
-    let set_up = !e.nix_enabled() || Path::new("/run/current-system").exists();
+    let set_up = apply::installed(e, &e.config.install);
     Situation {
         drive,
         backup_on_drive,
@@ -106,7 +106,7 @@ fn situation(e: &Env) -> Situation {
     }
 }
 
-fn options(e: &Env, s: &Situation) -> Vec<(String, Action)> {
+fn options(s: &Situation) -> Vec<(String, Action)> {
     let mut all = Vec::new();
     if let Drive::Unprepared(drives) = &s.drive {
         all.push((
@@ -121,14 +121,12 @@ fn options(e: &Env, s: &Situation) -> Vec<(String, Action)> {
             ("Set up this Mac from the backup".to_string(), Action::Setup),
         ]);
     }
-    if e.nix_enabled() {
-        all.extend([
-            ("Add a tool or app".to_string(), Action::Add),
-            ("Apply the configuration".to_string(), Action::Apply),
-            ("Update all tools".to_string(), Action::Update),
-            ("Edit macup.toml".to_string(), Action::Edit),
-        ]);
-    }
+    all.extend([
+        ("Add a tool or app".to_string(), Action::Add),
+        ("Install what macup.toml lists".to_string(), Action::Apply),
+        ("Update all tools and apps".to_string(), Action::Update),
+        ("Edit macup.toml".to_string(), Action::Edit),
+    ]);
     if s.drive == Drive::Ready {
         all.push((
             "Clean up the backup (remove what you deleted on this Mac)".to_string(),
@@ -150,7 +148,7 @@ pub fn run(mut e: Env) -> Result<()> {
         status::show(&e);
         println!();
         let s = situation(&e);
-        let mut opts = options(&e, &s);
+        let mut opts = options(&s);
         if s.drive == Drive::Missing {
             ui::warn("connect your backup drive to back up or restore");
         }
@@ -181,9 +179,9 @@ pub fn run(mut e: Env) -> Result<()> {
             ),
             Action::Restore => restore::menu(&e),
             Action::Add => add(&e),
-            Action::Apply => nix::apply(&e, false, false),
-            Action::Update => nix::apply(&e, true, false),
-            Action::Edit => nix::edit(&e),
+            Action::Apply => apply::apply(&e, false, false),
+            Action::Update => apply::apply(&e, true, false),
+            Action::Edit => apply::edit(&e),
             Action::Quit => Ok(()),
         });
     }

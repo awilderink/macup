@@ -86,7 +86,7 @@ pub fn make_library_with(
 
 fn fixture() -> Option<(tempfile::TempDir, Env, PhotoLibrary, String)> {
     let (dir, e) = fixture_env();
-    let bin = find_rsync(&e).ok()?;
+    let bin = find_rsync().ok()?;
     let src = e.home.join("Pictures/Photos Library.photoslibrary");
     let assets = vec![
         (UUID_A.to_string(), "DSCF3245.JPG".to_string(), 700_000_000),

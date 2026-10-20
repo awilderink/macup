@@ -25,74 +25,39 @@ pub fn dir_arg(path: &Path) -> String {
     format!("{}/", path.display().to_string().trim_end_matches('/'))
 }
 
-fn no_rsync(e: &Env) -> anyhow::Error {
-    let hint = if e.nix_enabled() {
-        "run `macup apply` first so it can be fetched through Nix"
-    } else {
-        "install it with `brew install rsync`"
-    };
+fn no_rsync() -> anyhow::Error {
     anyhow!(
-        "GNU rsync not found — {hint} (macOS's built-in openrsync is not reliable enough for this)"
+        "GNU rsync not found — `macup apply` installs it, or run `brew install rsync` (macOS's built-in openrsync is not reliable enough for this)"
     )
 }
 
 static RSYNC: Mutex<Option<String>> = Mutex::new(None);
 
-pub fn find_rsync(e: &Env) -> Result<String> {
+pub fn find_rsync() -> Result<String> {
     let mut cached = RSYNC.lock().map_err(|_| anyhow!("rsync lookup poisoned"))?;
     if let Some(bin) = cached.as_ref() {
         return Ok(bin.clone());
     }
-    let bin = locate_rsync(e)?;
+    let bin = locate_rsync()?;
     *cached = Some(bin.clone());
     Ok(bin)
 }
 
-fn locate_rsync(e: &Env) -> Result<String> {
+fn locate_rsync() -> Result<String> {
     let mut candidates: Vec<PathBuf> = vec![
         "/opt/homebrew/bin/rsync".into(),
         "/usr/local/bin/rsync".into(),
-        PathBuf::from("/etc/profiles/per-user")
-            .join(e.user())
-            .join("bin/rsync"),
-        e.home.join(".nix-profile/bin/rsync"),
-        "/run/current-system/sw/bin/rsync".into(),
     ];
     if let Some(found) = which("rsync")
         && !candidates.contains(&found)
     {
         candidates.insert(0, found);
     }
-    if let Some(bin) = candidates.iter().find(|c| is_gnu_rsync(c)) {
-        return Ok(bin.display().to_string());
-    }
-    let nix = crate::nix::find_nix()
-        .filter(|_| e.nix_enabled())
-        .ok_or_else(|| no_rsync(e))?;
-    let mut args = vec!["build", "nixpkgs#rsync", "--no-link", "--print-out-paths"];
-    let flake = crate::nix::prepare(e).map(|dir| dir.display().to_string());
-    if let Ok(dir) = &flake {
-        args.extend(["--inputs-from", dir.as_str()]);
-    }
-    let out = Command::new(&nix)
-        .args(crate::nix::nix_args(&args))
-        .output()?;
-    if !out.status.success() {
-        bail!(
-            "fetching rsync through Nix failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let store = stdout
-        .split_whitespace()
-        .last()
-        .ok_or_else(|| no_rsync(e))?;
-    let bin = Path::new(store).join("bin/rsync");
-    if !is_gnu_rsync(&bin) {
-        return Err(no_rsync(e));
-    }
-    Ok(bin.display().to_string())
+    candidates
+        .iter()
+        .find(|c| is_gnu_rsync(c))
+        .map(|bin| bin.display().to_string())
+        .ok_or_else(no_rsync)
 }
 
 pub fn which(name: &str) -> Option<PathBuf> {

@@ -421,7 +421,7 @@ pub fn restore_photos(e: &Env, target: &Path) -> Result<()> {
             e.photos_dir().display()
         );
     }
-    let bin = find_rsync(e)?;
+    let bin = find_rsync()?;
     for src in libs {
         let name = src
             .file_name()

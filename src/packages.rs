@@ -1,44 +1,41 @@
+use crate::apply::{drive_config, find_brew, offer_apply};
 use crate::config::{Config, InstallConfig};
-use crate::env::{Env, has_flake};
-use crate::nix::{drive_config, find_nix, nix_args, offer_apply, prepare};
+use crate::env::Env;
 use crate::search::{self, Lookup};
 use crate::ui::{confirm, interactive, note, ok, warn, with_spinner};
 use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Brew,
     Cask,
-    Nix,
 }
 
-const PREFERENCE: [Kind; 3] = [Kind::Cask, Kind::Brew, Kind::Nix];
+const PREFERENCE: [Kind; 2] = [Kind::Cask, Kind::Brew];
+const RUST_NAMES: [&str; 2] = ["rust", "rustup"];
 
 impl Kind {
     fn key(self) -> &'static str {
         match self {
             Kind::Brew => "brew",
             Kind::Cask => "cask",
-            Kind::Nix => "nix",
         }
     }
 
     fn from_key(key: &str) -> Kind {
         match key {
-            "brew" => Kind::Brew,
             "cask" => Kind::Cask,
-            _ => Kind::Nix,
+            _ => Kind::Brew,
         }
     }
 
-    fn homebrew(self) -> Option<Homebrew> {
+    fn homebrew(self) -> Homebrew {
         match self {
-            Kind::Brew => Some(Homebrew::Formula),
-            Kind::Cask => Some(Homebrew::Cask),
-            Kind::Nix => None,
+            Kind::Brew => Homebrew::Formula,
+            Kind::Cask => Homebrew::Cask,
         }
     }
 
@@ -46,7 +43,6 @@ impl Kind {
         match self {
             Kind::Brew => "Homebrew formula",
             Kind::Cask => "Homebrew cask",
-            Kind::Nix => "nixpkgs package",
         }
     }
 
@@ -54,7 +50,6 @@ impl Kind {
         match self {
             Kind::Brew => "--brew",
             Kind::Cask => "--cask",
-            Kind::Nix => "--nix",
         }
     }
 }
@@ -67,12 +62,6 @@ struct ListsFile {
 
 impl ListsFile {
     fn open(e: &Env) -> Result<ListsFile> {
-        if let Some(dir) = e.own_flake() {
-            bail!(
-                "your tools and apps are in your own flake at {} ([nix] config in macup.toml); add or remove them there",
-                dir.display()
-            );
-        }
         drive_config(e)?;
         let path = e.drive_config();
         let src = std::fs::read_to_string(&path)
@@ -108,7 +97,7 @@ impl ListsFile {
             .with_context(|| format!("writing {}", self.path.display()))?;
         if self.upgraded {
             note(format!(
-                "moved your lists from [tools] to [install] in {}; apps is now called cask",
+                "updated {} to the current layout: the lists are under [install], apps is now cask, and the nix list is gone (rustup is now rust = true; git and curl come with macOS)",
                 self.path.display()
             ));
         }
@@ -117,9 +106,6 @@ impl ListsFile {
 }
 
 pub fn upgrade_file(e: &Env) -> Result<()> {
-    if e.own_flake().is_some() {
-        return Ok(());
-    }
     let file = ListsFile::open(e)?;
     if file.upgraded {
         file.save()?;
@@ -130,9 +116,13 @@ pub fn upgrade_file(e: &Env) -> Result<()> {
 pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
     let mut file = ListsFile::open(e)?;
     let listed = file.install()?;
-    let _ = prepare(e);
     let mut picked: Vec<(Kind, String)> = Vec::new();
+    let mut rust = false;
     for name in names {
+        if RUST_NAMES.contains(&name.as_str()) {
+            rust = true;
+            continue;
+        }
         if let Some(installer) = listed.installer_of(name) {
             ok(format!(
                 "{name} is already listed under install.{installer}"
@@ -151,6 +141,15 @@ pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
         }
     }
     let mut added = Vec::new();
+    if rust && !listed.rust {
+        file.src = crate::tools::set_rust(&file.src)?;
+        added.push(format!(
+            "Turned on rust in {}: rustup and the stable toolchain, from Rust's own installer",
+            file.path.display()
+        ));
+    } else if rust {
+        ok("rust is already turned on in your config");
+    }
     for kind in PREFERENCE {
         let list: Vec<String> = picked
             .iter()
@@ -183,7 +182,6 @@ pub fn remove(e: &Env, names: &[String]) -> Result<()> {
     let listed = file.install()?;
     let mut removed = Vec::new();
     let mut found: HashSet<String> = HashSet::new();
-    let mut nix_changed = false;
     let mut uninstall: Vec<(String, Homebrew)> = Vec::new();
     for (key, list) in listed.lists() {
         let kind = Kind::from_key(key);
@@ -206,10 +204,7 @@ pub fn remove(e: &Env, names: &[String]) -> Result<()> {
             kind.key(),
             file.path.display()
         ));
-        match kind.homebrew() {
-            Some(brew) => uninstall.extend(changed.iter().map(|n| (n.clone(), brew))),
-            None => nix_changed = true,
-        }
+        uninstall.extend(changed.iter().map(|n| (n.clone(), kind.homebrew())));
         found.extend(changed.iter().map(|n| n.to_lowercase()));
     }
     if !removed.is_empty() {
@@ -227,14 +222,10 @@ pub fn remove(e: &Env, names: &[String]) -> Result<()> {
             None => warn(format!("{name} is not in your lists")),
         }
     }
-    offer_uninstall(&uninstall)?;
-    if nix_changed {
-        return offer_apply(e);
-    }
-    Ok(())
+    offer_uninstall(&uninstall)
 }
 
-pub fn check_edited(e: &Env, before: &InstallConfig, after: &InstallConfig) -> Result<()> {
+pub fn check_edited(before: &InstallConfig, after: &InstallConfig) -> Result<()> {
     let new: Vec<(Kind, String)> = after
         .lists()
         .into_iter()
@@ -253,12 +244,11 @@ pub fn check_edited(e: &Env, before: &InstallConfig, after: &InstallConfig) -> R
     if new.is_empty() {
         return Ok(());
     }
-    let _ = prepare(e);
     let results: Vec<Lookup> = with_spinner("Checking the names you added…", || {
         Ok(std::thread::scope(|s| {
             let handles: Vec<_> = new
                 .iter()
-                .map(|(kind, name)| s.spawn(move || lookup(e, name, *kind)))
+                .map(|(kind, name)| s.spawn(move || lookup(name, *kind)))
                 .collect();
             handles
                 .into_iter()
@@ -313,7 +303,7 @@ fn installed_by_brew(name: &str, kinds: &[Homebrew]) -> Option<Homebrew> {
     if kinds.is_empty() {
         return None;
     }
-    let brew = crate::rsync::which("brew")?;
+    let brew = find_brew()?;
     kinds.iter().copied().find(|kind| {
         Command::new(&brew)
             .args(["list", kind.flag(), name])
@@ -324,7 +314,7 @@ fn installed_by_brew(name: &str, kinds: &[Homebrew]) -> Option<Homebrew> {
 }
 
 fn offer_uninstall(items: &[(String, Homebrew)]) -> Result<()> {
-    let Some(brew) = crate::rsync::which("brew") else {
+    let Some(brew) = find_brew() else {
         return Ok(());
     };
     for (name, kind) in items {
@@ -387,19 +377,13 @@ fn describe(asked: &str, kind: Kind, lookup: &Lookup) -> String {
     name.clone()
 }
 
-fn lookup(e: &Env, name: &str, kind: Kind) -> Lookup {
-    match kind {
-        Kind::Brew => lookup_brew(Homebrew::Formula, name),
-        Kind::Cask => lookup_brew(Homebrew::Cask, name),
-        Kind::Nix => lookup_nix(e, name),
-    }
+fn lookup(name: &str, kind: Kind) -> Lookup {
+    lookup_brew(kind.homebrew(), name)
 }
 
 fn kind_of(e: &Env, name: &str, forced: Option<Kind>) -> Result<(Kind, String)> {
     if let Some(kind) = forced {
-        let found = with_spinner(&format!("Looking up {name}…"), || {
-            Ok(lookup(e, name, kind))
-        })?;
+        let found = with_spinner(&format!("Looking up {name}…"), || Ok(lookup(name, kind)))?;
         return match &found {
             Lookup::Missing => bail!("{}", not_found(e, name, Some(kind))),
             Lookup::Unknown(why) => {
@@ -412,7 +396,7 @@ fn kind_of(e: &Env, name: &str, forced: Option<Kind>) -> Result<(Kind, String)> 
     let lookups: Vec<(Kind, Lookup)> = with_spinner(&format!("Looking up {name}…"), || {
         Ok(std::thread::scope(|s| {
             PREFERENCE
-                .map(|kind| (kind, s.spawn(move || lookup(e, name, kind))))
+                .map(|kind| (kind, s.spawn(move || lookup(name, kind))))
                 .into_iter()
                 .map(|(kind, handle)| {
                     let found = handle.join().unwrap_or_else(|_| {
@@ -458,54 +442,15 @@ fn kind_of(e: &Env, name: &str, forced: Option<Kind>) -> Result<(Kind, String)> 
                 })
                 .collect();
             bail!(
-                "could not tell which installer {name} needs ({}); say which with --cask, --brew or --nix",
+                "could not tell whether {name} is a cask or a formula ({}); say which with --cask or --brew",
                 why.join("; ")
             )
         }
     }
 }
 
-fn nix_eval(e: &Env, nix: &Path, attr: &str) -> std::result::Result<String, String> {
-    let mut args = vec!["eval".to_string(), "--raw".to_string()];
-    if let Some(dir) = e
-        .own_flake()
-        .or(Some(e.flake_dir()))
-        .filter(|d| has_flake(d))
-    {
-        args.extend(["--inputs-from".to_string(), dir.display().to_string()]);
-    }
-    args.push(attr.to_string());
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = Command::new(nix)
-        .args(nix_args(&args))
-        .output()
-        .map_err(|err| err.to_string())?;
-    if out.status.success() {
-        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
-    }
-    Err(String::from_utf8_lossy(&out.stderr)
-        .lines()
-        .filter(|l| !l.starts_with("fetching "))
-        .collect::<Vec<_>>()
-        .join("\n"))
-}
-
-fn lookup_nix(e: &Env, name: &str) -> Lookup {
-    let Some(nix) = find_nix() else {
-        return Lookup::Unknown("Nix is not installed yet".into());
-    };
-    match nix_eval(e, &nix, &format!("nixpkgs#{name}.name")) {
-        Ok(found) => Lookup::Found {
-            name: name.to_string(),
-            detail: found,
-        },
-        Err(err) if err.contains("does not provide attribute") => Lookup::Missing,
-        Err(err) => Lookup::Unknown(err),
-    }
-}
-
 fn lookup_brew(kind: Homebrew, name: &str) -> Lookup {
-    let Some(brew) = crate::rsync::which("brew") else {
+    let Some(brew) = find_brew() else {
         return search::brew_from_api(kind.api(), name);
     };
     let out = match Command::new(brew)
@@ -529,41 +474,19 @@ fn lookup_brew(kind: Homebrew, name: &str) -> Lookup {
 }
 
 fn not_found(e: &Env, name: &str, kind: Option<Kind>) -> String {
-    let url = search::web_url(name);
     let wanted = |k: Kind| kind.is_none_or(|kind| kind == k);
-    let (packages, formulae, casks) = with_spinner("Looking for similar names…", || {
-        let packages = wanted(Kind::Nix)
-            .then(|| {
-                let release = find_nix()
-                    .and_then(|nix| nix_eval(e, &nix, "nixpkgs#lib.trivial.release").ok());
-                search::packages(release.as_deref(), name)
-            })
-            .flatten()
-            .unwrap_or_default();
-        let similar = |k: Kind, brew: Homebrew| {
-            if wanted(k) {
-                search::similar_brews(&e.home, brew.api(), name)
-            } else {
-                Vec::new()
-            }
-        };
-        Ok((
-            packages,
-            similar(Kind::Brew, Homebrew::Formula),
-            similar(Kind::Cask, Homebrew::Cask),
-        ))
-    })
-    .unwrap_or_default();
+    let similar = |k: Kind| {
+        if wanted(k) {
+            search::similar_brews(&e.home, k.homebrew().api(), name)
+        } else {
+            Vec::new()
+        }
+    };
+    let (formulae, casks) = (similar(Kind::Brew), similar(Kind::Cask));
     let mut msg = match kind {
         Some(kind) => format!("there is no {} called {name:?}.", kind.label()),
-        None => format!("neither nixpkgs nor Homebrew has anything called {name:?}."),
+        None => format!("Homebrew has no formula or cask called {name:?}."),
     };
-    if !packages.is_empty() {
-        msg.push_str(&format!(
-            "\nnixpkgs packages on search.nixos.org:\n{}",
-            search::format(&packages)
-        ));
-    }
     if !formulae.is_empty() {
         msg.push_str(&format!(
             "\nHomebrew formulae:\n  {}",
@@ -573,12 +496,8 @@ fn not_found(e: &Env, name: &str, kind: Option<Kind>) -> String {
     if !casks.is_empty() {
         msg.push_str(&format!("\nHomebrew casks:\n  {}", casks.join("\n  ")));
     }
-    match kind {
-        Some(Kind::Cask | Kind::Brew) if casks.is_empty() && formulae.is_empty() => {
-            msg.push_str(&format!(" Try `brew search {name}`."))
-        }
-        Some(Kind::Cask | Kind::Brew) => {}
-        _ => msg.push_str(&format!("\nMore at {url}")),
+    if formulae.is_empty() && casks.is_empty() {
+        msg.push_str(&format!(" Try `brew search {name}`."));
     }
     msg
 }

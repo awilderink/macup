@@ -6,7 +6,7 @@ Back up your Mac to an external drive, bring it back after a reinstall, and keep
 - **Restore:** browse the backup as a tree and pick what to bring back. Files that are newer on the Mac are kept.
 - **Tools and apps:** `macup add firefox ripgrep` installs a Mac app and a command-line tool and remembers both, so a fresh Mac gets them back.
 
-macup is a single binary that lives on the backup drive itself, so it works on a Mac that has just been reinstalled. It is written in Rust for Apple Silicon Macs and uses rsync for files, Nix (nix-darwin) and Homebrew for tools and apps, and Apple's PhotoKit for photos that only exist in iCloud.
+macup is a single binary that lives on the backup drive itself, so it works on a Mac that has just been reinstalled. It is written in Rust for Apple Silicon Macs and uses rsync for files, Homebrew for tools and apps, and Apple's PhotoKit for photos that only exist in iCloud.
 
 ## Getting started
 
@@ -18,7 +18,7 @@ macup is a single binary that lives on the backup drive itself, so it works on a
 
 It walks you through three steps, each of which you can skip:
 
-1. **Tools, apps and settings.** It installs what is missing (Apple's Command Line Tools, Nix), then the tools and apps listed on the drive. If the Command Line Tools installer appears, finish it and run `macup setup` again.
+1. **Tools, apps and settings.** It installs what is missing (Apple's Command Line Tools, Homebrew), then the tools and apps listed on the drive, and Rust when you asked for it. If the Command Line Tools installer appears, finish it and run `macup setup` again.
 2. **Files and folders.** Pick what to bring back from the backup. You see a preview first, including any files that are newer on this Mac.
 3. **Photos.** It shows the size of your backed-up Photos library next to the Mac's free space and asks before copying it back.
 
@@ -77,23 +77,23 @@ Your tools and apps are listed in `macup.toml` on the drive, so a fresh Mac gets
 [install]
 brew = ["bat", "gh", "ripgrep"]
 cask = ["claude-code", "ghostty", "raycast"]
-nix = ["curl", "git", "rustup"]
+rust = true
 ```
 
 - **`brew`** — Homebrew formulae: command-line tools Homebrew builds or unpacks.
 - **`cask`** — Homebrew casks: ready-made downloads from the maker. Usually Mac apps, but also some commands (`claude-code`) and fonts.
-- **`nix`** — packages from nixpkgs, for tools Homebrew won't put on your PATH, such as curl and rustup.
+- **`rust = true`** — rustup and the stable toolchain, from Rust's own installer into `~/.cargo`. Homebrew's rustup isn't put on your PATH, so macup doesn't use it.
 
-Each name is listed once; the same name under two lists, or a list name macup doesn't know, stops with an error that says what to fix. `macup apply` installs everything on the lists. Behind it is a fixed nix-darwin setup built into macup; the versions it pins are kept next to `macup.toml` in `macup.lock`, so every Mac installs the same ones. The lists need the drive: `add`, `remove`, `edit` and `apply` ask you to connect it.
+git and curl come with macOS and the Command Line Tools, so they don't need listing. Each name is listed once; the same name under two lists, or a list name macup doesn't know, stops with an error that says what to fix.
 
-- **`macup add <name>`** works out which list a name belongs in. It looks for a cask first, then a formula, then a nixpkgs package, picks the first it finds and says what else exists; `--cask`, `--brew` or `--nix` decides instead. It writes the name Homebrew uses now, so `docker` is listed as `docker-desktop`. When a name is not found, you get the closest matches from search.nixos.org and Homebrew. Nothing is written unless every name was found, and the formatting and comments in `macup.toml` are kept.
-- **`macup remove <name>`** finds the name in whichever list holds it and takes it out. For Homebrew it also offers to uninstall it, because Homebrew is set up to leave unlisted things alone. That also works for things you installed by hand with `brew`.
-- **`macup apply --update`** updates everything to the latest versions; `--check` only checks that everything can be built.
+`macup apply` installs Homebrew if it is missing, then everything on the lists with `brew bundle`, plus GNU rsync, which backups need. It installs what is missing and leaves what is already there as it is. It always gets the current version; nothing is pinned, so two Macs can end up on different versions. It runs as you, never as root; Homebrew and some casks ask for your password themselves. The lists need the drive: `add`, `remove`, `edit` and `apply` ask you to connect it.
+
+- **`macup add <name>`** works out which list a name belongs in. It looks for a cask first, then a formula, picks the first it finds and says if the other exists too; `--cask` or `--brew` decides instead. It writes the name Homebrew uses now, so `docker` is listed as `docker-desktop`. `macup add rustup` turns on `rust`. When a name is not found, you get the closest matches from Homebrew. Nothing is written unless every name was found, and the formatting and comments in `macup.toml` are kept.
+- **`macup remove <name>`** finds the name in whichever list holds it and takes it out. It also offers to uninstall it, because macup leaves things you no longer list alone. That also works for things you installed by hand with `brew`.
+- **`macup apply --update`** also updates Homebrew and upgrades everything listed, and runs `rustup update`; `--check` only shows what isn't installed yet.
 - **`macup edit`** opens `macup.toml` in your editor. When you save, it checks the names you added; if one doesn't exist it offers to reopen the file, and it warns about names Homebrew has renamed. Then it offers to apply.
 
-A drive set up by an earlier macup, with a `[tools]` section and an `apps` list, keeps working; the next `add`, `remove` or `edit` renames them to `[install]` and `cask`.
-
-Without Nix, macup is a backup and restore tool; install GNU rsync with `brew install rsync`.
+A drive set up by an earlier macup keeps working: a `[tools]` section becomes `[install]`, `apps` becomes `cask`, and the old `nix` list goes (rustup becomes `rust = true`; git and curl come with macOS; anything else stops with a message saying to move it to `brew`). The next `add`, `remove` or `edit` writes the change into the file. An old `[nix]` section is ignored.
 
 ## The backup drive
 
@@ -101,7 +101,6 @@ Without Nix, macup is a backup and restore tool; install GNU rsync with `brew in
 /Volumes/Backup/
 ├── macup              this tool
 ├── macup.toml         settings, tools and apps
-├── macup.lock         the versions your tools are pinned to
 └── macs/
     └── <Mac name>/    one folder per Mac
         ├── home/      the home folder backup
@@ -125,14 +124,10 @@ rules = [
 [[restore.presets]]
 name = "Claude Code config"
 paths = [".claude"]
-
-[nix]
-enabled = true
 ```
 
 - **`backup.rules`** are rsync filter rules: `- ` skips, `+ ` includes, and the first match wins. Paths starting with `/` are relative to your home folder. Your rules come after macup's built-in skips for caches and junk and before its built-in structure, so a `+` rule can bring back a folder under `~/Library`, but not the caches inside it. The built-in rules are in [`rules/`](rules).
 - **`restore.presets`** appear under `p` in the restore picker.
-- **`[nix]`:** without it, the Nix commands are available whenever Nix is installed or the lists have something in them. `enabled = false` turns them off. To change macup's setup itself, point `config = "~/my-flake"` at your own nix-darwin flake; macup then applies that instead, and you list tools and apps in it yourself and `[install]` is not used.
 
 Never put SSH keys, API keys or other secrets in `macup.toml`.
 
@@ -152,4 +147,4 @@ Logs of every backup and restore are in `~/.backup-logs`.
 ./build.sh
 ```
 
-This checks formatting and lints, runs the tests, builds `~/.local/bin/macup` and, when the backup drive is connected, copies the binary to the drive. It needs Rust (`rustup`) and Apple's Command Line Tools.
+This checks formatting and lints, runs the tests, builds `~/.local/bin/macup` and, when the backup drive is connected, copies the binary to the drive. It needs Rust (`rust = true`) and Apple's Command Line Tools.

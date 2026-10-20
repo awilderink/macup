@@ -2,20 +2,12 @@ use crate::config::{self, Config};
 use anyhow::{Result, bail};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Nix {
-    On,
-    OffByConfig,
-    Absent,
-}
-
 #[derive(Clone, Debug)]
 pub struct Env {
     pub home: PathBuf,
     pub volume: PathBuf,
     pub machine: String,
     pub config: Config,
-    pub nix: Nix,
 }
 
 impl Env {
@@ -36,39 +28,17 @@ impl Env {
     }
 
     fn assemble(home: PathBuf, volume: PathBuf, machine: String, config: Config) -> Env {
-        let mut e = Env {
+        Env {
             home,
             volume,
             machine,
             config,
-            nix: Nix::Absent,
-        };
-        e.nix = e.detect_nix();
-        e
+        }
     }
 
     #[cfg(test)]
     pub fn new(home: PathBuf, volume: PathBuf) -> Env {
         Env::assemble(home, volume, "test-mac".into(), Config::default())
-    }
-
-    #[cfg(test)]
-    pub fn with_config(self, config: Config) -> Env {
-        Env::assemble(self.home, self.volume, self.machine, config)
-    }
-
-    fn detect_nix(&self) -> Nix {
-        match self.config.nix.enabled {
-            Some(false) => Nix::OffByConfig,
-            Some(true) => Nix::On,
-            None if self.own_flake().is_some()
-                || !self.config.install.is_empty()
-                || crate::nix::find_nix().is_some() =>
-            {
-                Nix::On
-            }
-            None => Nix::Absent,
-        }
     }
 
     pub fn for_machine(&self, machine: &str) -> Env {
@@ -84,13 +54,6 @@ impl Env {
 
     pub fn machine_dir(&self) -> PathBuf {
         self.macs_dir().join(&self.machine)
-    }
-
-    pub fn user(&self) -> String {
-        self.home
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
     }
 
     pub fn backup_home(&self) -> PathBuf {
@@ -109,24 +72,12 @@ impl Env {
         self.volume.join(config::FILE_NAME)
     }
 
-    pub fn drive_lock(&self) -> PathBuf {
-        self.volume.join("macup.lock")
+    pub fn cache_dir(&self) -> PathBuf {
+        self.home.join("Library/Caches/macup")
     }
 
-    pub fn flake_dir(&self) -> PathBuf {
-        self.home.join("Library/Caches/macup/nix")
-    }
-
-    pub fn own_flake(&self) -> Option<PathBuf> {
-        let dir = self.config.nix.config.as_deref()?;
-        Some(match dir.strip_prefix("~/") {
-            Some(rest) => self.home.join(rest),
-            None => PathBuf::from(dir),
-        })
-    }
-
-    pub fn nix_enabled(&self) -> bool {
-        self.nix == Nix::On
+    pub fn rustup(&self) -> PathBuf {
+        self.home.join(".cargo/bin/rustup")
     }
 
     pub fn log_dir(&self) -> PathBuf {
@@ -189,8 +140,4 @@ pub fn env_string(key: &str, fallback: &str) -> String {
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| fallback.to_string())
-}
-
-pub fn has_flake(dir: &Path) -> bool {
-    dir.join("flake.nix").exists()
 }

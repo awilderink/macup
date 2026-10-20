@@ -23,7 +23,7 @@ fn write(path: &std::path::Path, data: &str) {
 #[test]
 fn embedded_rules_select_the_right_files() {
     let (_dir, e) = fixture_env();
-    let Ok(bin) = find_rsync(&e) else { return };
+    let Ok(bin) = find_rsync() else { return };
     for f in [
         "Documents/a.txt",
         "Pictures/Photos Library.photoslibrary/database/Photos.sqlite",
@@ -101,7 +101,7 @@ fn guards_stop_non_interactive_runs_unless_yes() {
 #[test]
 fn mirror_guard_counts_what_would_be_deleted() {
     let (_dir, e) = fixture_env();
-    let Ok(bin) = find_rsync(&e) else { return };
+    let Ok(bin) = find_rsync() else { return };
     write(&e.home.join("kept.txt"), "x");
     for f in ["kept.txt", "gone.txt", "old/a.txt"] {
         write(&e.backup_home().join(f), "x");
@@ -123,18 +123,4 @@ fn mirror_guard_counts_what_would_be_deleted() {
         e.backup_home().join("gone.txt").exists(),
         "the preview deleted files"
     );
-}
-
-// A Mac without Nix must still be able to back up and restore; only the
-// commands that manage the system configuration refuse to run.
-#[test]
-fn nix_can_be_turned_off_per_drive() {
-    let (_dir, e) = fixture_env();
-    let mut config = crate::config::Config::default();
-    config.nix.enabled = Some(false);
-    config.nix.config = Some("~/dotfiles/darwin".into());
-    let e = e.with_config(config);
-    assert!(!e.nix_enabled());
-    assert_eq!(e.own_flake(), Some(e.home.join("dotfiles/darwin")));
-    assert!(crate::nix::require_nix(&e).is_err());
 }

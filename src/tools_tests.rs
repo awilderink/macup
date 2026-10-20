@@ -46,13 +46,13 @@ fn keeps_the_rest_of_the_file() {
 
 #[test]
 fn creates_the_section_and_list_when_missing() {
-    let (out, changed) = add("[backup]\nrules = []\n", "nix", &["curl"]);
-    assert_eq!(changed, names(&["curl"]));
-    let config = crate::config::Config::parse(&out).unwrap();
-    assert_eq!(config.install.nix, names(&["curl"]));
-    let (out, _) = add(&out, "brew", &["bat"]);
+    let (out, changed) = add("[backup]\nrules = []\n", "brew", &["bat"]);
+    assert_eq!(changed, names(&["bat"]));
     let config = crate::config::Config::parse(&out).unwrap();
     assert_eq!(config.install.brew, names(&["bat"]));
+    let (out, _) = add(&out, "cask", &["ghostty"]);
+    let config = crate::config::Config::parse(&out).unwrap();
+    assert_eq!(config.install.cask, names(&["ghostty"]));
 }
 
 #[test]
@@ -77,30 +77,39 @@ fn a_list_that_is_not_a_list_is_an_error() {
     assert!(edit("install = 1\n", "brew", &names(&["fd"]), true).is_err());
 }
 
-const OLD: &str = "[backup]\nrules = []\n\n# what this Mac needs\n[tools]\nnix = [\"curl\"]\n# apps from Homebrew\napps = [\n  \"ghostty\",\n]\n\n[nix]\nenabled = true\n";
+const OLD: &str = "[backup]\nrules = []\n\n# what this Mac needs\n[tools]\nnix = [\"curl\", \"rustup\"]\n# apps from Homebrew\napps = [\n  \"ghostty\",\n]\n\n[nix]\nenabled = true\n";
 
 // A drive written by an older macup must keep working, and its comments must
-// survive the move to [install].
+// survive the move to the current layout.
 #[test]
-fn upgrades_an_old_tools_section_in_place() {
+fn upgrades_an_old_layout_in_place() {
     let out = upgrade(OLD).unwrap().unwrap();
     assert!(out.contains("# what this Mac needs\n[install]\n"), "{out}");
     assert!(
         out.contains("# apps from Homebrew\ncask = [\n  \"ghostty\",\n]"),
         "{out}"
     );
-    assert!(!out.contains("[tools]") && !out.contains("apps ="), "{out}");
-    assert!(out.find("[install]") < out.find("[nix]"), "{out}");
+    assert!(out.contains("rust = true"), "{out}");
+    for gone in ["[tools]", "apps =", "nix", "curl"] {
+        assert!(!out.contains(gone), "{gone} left in {out}");
+    }
     let config = crate::config::Config::parse(&out).unwrap();
     assert_eq!(config.install.cask, names(&["ghostty"]));
-    assert!(!config.old_tools_section);
+    assert!(config.install.rust && !config.old_layout);
     assert_eq!(upgrade(&out).unwrap(), None);
 }
 
 #[test]
-fn an_old_tools_section_still_loads() {
+fn an_old_layout_still_loads() {
     let config = crate::config::Config::parse(OLD).unwrap();
-    assert!(config.old_tools_section);
+    assert!(config.old_layout && config.install.rust);
     assert_eq!(config.install.cask, names(&["ghostty"]));
-    assert_eq!(config.install.nix, names(&["curl"]));
+}
+
+#[test]
+fn turns_on_rust_keeping_the_lists() {
+    let out = set_rust(CONFIG).unwrap();
+    let config = crate::config::Config::parse(&out).unwrap();
+    assert!(config.install.rust);
+    assert_eq!(config.install.brew, names(&["bat", "ripgrep"]));
 }

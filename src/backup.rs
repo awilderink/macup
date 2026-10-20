@@ -87,7 +87,7 @@ pub fn run(e: &Env, o: &Options) -> Result<()> {
     if o.no_photos && o.photos_only {
         bail!("--no-photos and --photos-only cannot be combined");
     }
-    let bin = find_rsync(e)?;
+    let bin = find_rsync()?;
     let rules = write_rules_file(&e.config)?;
     let rules_arg = rules.arg();
     let libs: Vec<PhotoLibrary> = if o.no_photos {
