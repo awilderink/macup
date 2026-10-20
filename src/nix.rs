@@ -320,11 +320,11 @@ pub fn edit(e: &Env, section: Option<String>) -> Result<()> {
             "What do you want to change?",
             &[
                 (
-                    "Command-line tools (home.nix)".into(),
+                    "Command-line tools from nixpkgs (home.nix)".into(),
                     "packages".to_string(),
                 ),
                 (
-                    "Apps installed with Homebrew (flake.nix)".into(),
+                    "Apps and tools installed with Homebrew (flake.nix)".into(),
                     "apps".to_string(),
                 ),
                 (

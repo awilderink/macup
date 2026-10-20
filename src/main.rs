@@ -157,7 +157,7 @@ enum Command {
     Edit {
         #[arg(
             value_parser = ["packages", "apps", "system"],
-            help = "packages: command-line tools (home.nix); apps: Homebrew apps (flake.nix); system: macOS and Nix settings (darwin.nix). Asks when left out."
+            help = "packages: command-line tools from nixpkgs (home.nix); apps: Homebrew apps and tools (flake.nix); system: macOS and Nix settings (darwin.nix). Asks when left out."
         )]
         section: Option<String>,
     },
@@ -179,22 +179,22 @@ enum Command {
 }
 
 #[derive(clap::Args)]
+#[group(multiple = false)]
 struct KindFlags {
-    #[arg(
-        long,
-        conflicts_with = "tool",
-        help = "only look for a Mac app (Homebrew cask)"
-    )]
+    #[arg(long, help = "only look for a Mac app (Homebrew cask)")]
     app: bool,
-    #[arg(long, help = "only look for a command-line tool (nixpkgs)")]
+    #[arg(long, help = "only look for a command-line tool in Homebrew")]
+    brew: bool,
+    #[arg(long, help = "only look for a command-line tool in nixpkgs")]
     tool: bool,
 }
 
 impl KindFlags {
     fn forced(&self) -> Option<packages::Kind> {
-        match (self.app, self.tool) {
-            (true, _) => Some(packages::Kind::App),
-            (_, true) => Some(packages::Kind::Tool),
+        match (self.app, self.brew, self.tool) {
+            (true, _, _) => Some(packages::Kind::App),
+            (_, true, _) => Some(packages::Kind::Formula),
+            (_, _, true) => Some(packages::Kind::Tool),
             _ => None,
         }
     }

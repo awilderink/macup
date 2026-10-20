@@ -235,7 +235,42 @@ fn nix_files(dir: &Path) -> Vec<PathBuf> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Tool,
+    Formula,
     App,
+}
+
+const PREFERENCE: [Kind; 3] = [Kind::App, Kind::Formula, Kind::Tool];
+
+impl Kind {
+    fn spec(self) -> &'static ListSpec {
+        match self {
+            Kind::Tool => &PACKAGES,
+            Kind::Formula => &BREWS,
+            Kind::App => &CASKS,
+        }
+    }
+
+    fn what(self) -> &'static str {
+        match self {
+            Kind::Tool | Kind::Formula => "command-line tool",
+            Kind::App => "Mac app",
+        }
+    }
+
+    fn source(self) -> &'static str {
+        match self {
+            Kind::Tool => "nixpkgs",
+            Kind::Formula | Kind::App => "Homebrew",
+        }
+    }
+
+    fn flag(self) -> &'static str {
+        match self {
+            Kind::Tool => "--tool",
+            Kind::Formula => "--brew",
+            Kind::App => "--app",
+        }
+    }
 }
 
 struct Workspace {
@@ -344,7 +379,7 @@ pub fn counts(dir: &Path) -> Option<(usize, usize)> {
 pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
     ensure_config(e)?;
     let mut ws = Workspace::open(&e.nix_dir())?;
-    let (mut tools, mut apps) = (Vec::new(), Vec::new());
+    let mut picked: Vec<(Kind, String)> = Vec::new();
     for name in names {
         if [&PACKAGES, &CASKS, &BREWS]
             .into_iter()
@@ -355,16 +390,19 @@ pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
             ok(format!("{name} is already in your config"));
             continue;
         }
-        match kind_of(e, name, forced)? {
-            Kind::Tool => tools.push(name.clone()),
-            Kind::App => apps.push(name.clone()),
-        }
+        picked.push((kind_of(e, name, forced)?, name.clone()));
     }
     let mut added = Vec::new();
-    for (spec, list) in [(&PACKAGES, tools), (&CASKS, apps)] {
+    for kind in [Kind::Tool, Kind::Formula, Kind::App] {
+        let list: Vec<String> = picked
+            .iter()
+            .filter(|(k, _)| *k == kind)
+            .map(|(_, name)| name.clone())
+            .collect();
         if list.is_empty() {
             continue;
         }
+        let spec = kind.spec();
         let (file, changed) = ws.edit(spec, &list, true)?.ok_or_else(|| {
             anyhow!(
                 "could not find a {} list in {}; edit it by hand with `macup edit`",
@@ -387,16 +425,15 @@ pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
 pub fn remove(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
     ensure_config(e)?;
     let mut ws = Workspace::open(&e.nix_dir())?;
-    let specs: &[&ListSpec] = match forced {
-        Some(Kind::Tool) => &[&PACKAGES],
-        Some(Kind::App) => &[&CASKS],
-        None => &[&PACKAGES, &CASKS, &BREWS],
+    let specs: Vec<&ListSpec> = match forced {
+        Some(kind) => vec![kind.spec()],
+        None => vec![&PACKAGES, &CASKS, &BREWS],
     };
     let mut removed = Vec::new();
     let mut found: HashSet<String> = HashSet::new();
     let mut tools_changed = false;
     let mut uninstall: Vec<(String, Brew)> = Vec::new();
-    for &spec in specs {
+    for spec in specs {
         let Some((file, changed)) = ws.edit(spec, names, false)? else {
             continue;
         };
@@ -412,11 +449,12 @@ pub fn remove(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
     }
     ws.save()?;
     removed.iter().for_each(ok);
+    let brews: Vec<Brew> = match forced {
+        Some(kind) => brew_kind(kind.spec()).into_iter().collect(),
+        None => vec![Brew::Cask, Brew::Formula],
+    };
     for name in names.iter().filter(|n| !found.contains(*n)) {
-        match (forced != Some(Kind::Tool))
-            .then(|| installed_by_brew(name))
-            .flatten()
-        {
+        match installed_by_brew(name, &brews) {
             Some(kind) => {
                 note(format!(
                     "{name} is not in your config, but Homebrew installed it"
@@ -446,6 +484,13 @@ impl Brew {
             Brew::Formula => "--formula",
         }
     }
+
+    fn api(self) -> &'static str {
+        match self {
+            Brew::Cask => "cask",
+            Brew::Formula => "formula",
+        }
+    }
 }
 
 fn brew_kind(spec: &ListSpec) -> Option<Brew> {
@@ -458,9 +503,12 @@ fn brew_kind(spec: &ListSpec) -> Option<Brew> {
     }
 }
 
-fn installed_by_brew(name: &str) -> Option<Brew> {
+fn installed_by_brew(name: &str, kinds: &[Brew]) -> Option<Brew> {
+    if kinds.is_empty() {
+        return None;
+    }
     let brew = crate::rsync::which("brew")?;
-    [Brew::Cask, Brew::Formula].into_iter().find(|kind| {
+    kinds.iter().copied().find(|kind| {
         Command::new(&brew)
             .args(["list", kind.flag(), name])
             .output()
@@ -474,7 +522,7 @@ fn offer_uninstall(items: &[(String, Brew)]) -> Result<()> {
         return Ok(());
     };
     for (name, kind) in items {
-        if installed_by_brew(name) != Some(*kind) {
+        if installed_by_brew(name, &[*kind]).is_none() {
             continue;
         }
         let flag = kind.flag();
@@ -503,79 +551,101 @@ enum Decision {
     CannotTell,
 }
 
-fn decide(tool: &Lookup, app: &Lookup) -> Decision {
-    match (tool, app) {
-        (_, Lookup::Found(_)) => Decision::Use(Kind::App),
-        (Lookup::Found(_), _) => Decision::Use(Kind::Tool),
-        (Lookup::Missing, Lookup::Missing) => Decision::NotFound,
-        _ => Decision::CannotTell,
+fn decide(lookups: &[(Kind, Lookup)]) -> Decision {
+    if let Some((kind, _)) = lookups
+        .iter()
+        .find(|(_, lookup)| matches!(lookup, Lookup::Found(_)))
+    {
+        return Decision::Use(*kind);
+    }
+    if lookups.iter().all(|(_, lookup)| *lookup == Lookup::Missing) {
+        Decision::NotFound
+    } else {
+        Decision::CannotTell
     }
 }
 
 fn describe(name: &str, kind: Kind, lookup: &Lookup) {
-    let what = match kind {
-        Kind::Tool => "command-line tool from nixpkgs",
-        Kind::App => "Mac app from Homebrew",
-    };
+    let what = format!("{} from {}", kind.what(), kind.source());
     match lookup {
         Lookup::Found(detail) if !detail.is_empty() => note(format!("{name}: {what} ({detail})")),
         _ => note(format!("{name}: {what}")),
     }
 }
 
+fn lookup(e: &Env, name: &str, kind: Kind) -> Lookup {
+    match kind {
+        Kind::Tool => lookup_tool(e, name),
+        Kind::Formula => lookup_brew(Brew::Formula, name),
+        Kind::App => lookup_brew(Brew::Cask, name),
+    }
+}
+
 fn kind_of(e: &Env, name: &str, forced: Option<Kind>) -> Result<Kind> {
     if let Some(kind) = forced {
-        let lookup = with_spinner(&format!("Looking up {name}…"), || {
-            Ok(match kind {
-                Kind::Tool => lookup_tool(e, name),
-                Kind::App => lookup_app(name),
-            })
+        let found = with_spinner(&format!("Looking up {name}…"), || {
+            Ok(lookup(e, name, kind))
         })?;
-        match &lookup {
+        match &found {
             Lookup::Missing => bail!("{}", not_found(e, name, Some(kind))),
             Lookup::Unknown(why) => warn(format!("could not check {name}: {why}")),
-            Lookup::Found(_) => describe(name, kind, &lookup),
+            Lookup::Found(_) => describe(name, kind, &found),
         }
         return Ok(kind);
     }
-    let (tool, app) = with_spinner(&format!("Looking up {name}…"), || {
+    let lookups: Vec<(Kind, Lookup)> = with_spinner(&format!("Looking up {name}…"), || {
         Ok(std::thread::scope(|s| {
-            let app = s.spawn(|| lookup_app(name));
-            let tool = lookup_tool(e, name);
-            let app = app
-                .join()
-                .unwrap_or_else(|_| Lookup::Unknown("the Homebrew lookup crashed".into()));
-            (tool, app)
+            PREFERENCE
+                .map(|kind| (kind, s.spawn(move || lookup(e, name, kind))))
+                .into_iter()
+                .map(|(kind, handle)| {
+                    let found = handle.join().unwrap_or_else(|_| {
+                        Lookup::Unknown(format!("the {} lookup crashed", kind.source()))
+                    });
+                    (kind, found)
+                })
+                .collect()
         }))
     })?;
-    match decide(&tool, &app) {
-        Decision::Use(Kind::App) => {
-            describe(name, Kind::App, &app);
-            if let Lookup::Found(_) = tool {
-                note(format!(
-                    "nixpkgs also has a package called {name}; `macup add --tool {name}` adds that instead"
-                ));
+    match decide(&lookups) {
+        Decision::Use(kind) => {
+            let mut preferred = true;
+            for (other, found) in &lookups {
+                if *other == kind {
+                    describe(name, kind, found);
+                    preferred = false;
+                    continue;
+                }
+                match found {
+                    Lookup::Found(_) => note(format!(
+                        "{} also has a {} called {name}; `macup add {} {name}` adds that instead",
+                        other.source(),
+                        other.what(),
+                        other.flag()
+                    )),
+                    Lookup::Unknown(why) if preferred => note(format!(
+                        "could not check {} for a {}: {why}",
+                        other.source(),
+                        other.what()
+                    )),
+                    _ => {}
+                }
             }
-            Ok(Kind::App)
-        }
-        Decision::Use(Kind::Tool) => {
-            describe(name, Kind::Tool, &tool);
-            if let Lookup::Unknown(why) = &app {
-                note(format!("could not check Homebrew for an app: {why}"));
-            }
-            Ok(Kind::Tool)
+            Ok(kind)
         }
         Decision::NotFound => bail!("{}", not_found(e, name, None)),
         Decision::CannotTell => {
-            let why: Vec<String> = [("nixpkgs", &tool), ("Homebrew", &app)]
-                .into_iter()
-                .filter_map(|(source, l)| match l {
-                    Lookup::Unknown(why) => Some(format!("{source}: {why}")),
+            let why: Vec<String> = lookups
+                .iter()
+                .filter_map(|(kind, found)| match found {
+                    Lookup::Unknown(why) => {
+                        Some(format!("{}s in {}: {why}", kind.what(), kind.source()))
+                    }
                     _ => None,
                 })
                 .collect();
             bail!(
-                "could not tell whether {name} is a command-line tool or a Mac app ({}); say which with --tool or --app",
+                "could not tell whether {name} is a command-line tool or a Mac app ({}); say which with --app, --brew or --tool",
                 why.join("; ")
             )
         }
@@ -609,22 +679,24 @@ fn lookup_tool(e: &Env, name: &str) -> Lookup {
     }
 }
 
-fn lookup_app(name: &str) -> Lookup {
+fn lookup_brew(kind: Brew, name: &str) -> Lookup {
     let Some(brew) = crate::rsync::which("brew") else {
-        return search::cask_from_api(name);
+        return search::brew_from_api(kind.api(), name);
     };
     let out = match Command::new(brew)
-        .args(["info", "--cask", "--json=v2", name])
+        .args(["info", kind.flag(), "--json=v2", name])
         .output()
     {
         Ok(out) => out,
         Err(err) => return Lookup::Unknown(err.to_string()),
     };
     if out.status.success() {
-        return Lookup::Found(search::cask_version(&out.stdout).unwrap_or_default());
+        return Lookup::Found(search::brew_version(&out.stdout).unwrap_or_default());
     }
     let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
-    if err.contains("no cask with this name") || err.contains("no available cask") {
+    if err.contains("no cask with this name")
+        || err.contains(&format!("no available {}", kind.api()))
+    {
         Lookup::Missing
     } else {
         Lookup::Unknown(err.trim().to_string())
@@ -633,8 +705,9 @@ fn lookup_app(name: &str) -> Lookup {
 
 fn not_found(e: &Env, name: &str, kind: Option<Kind>) -> String {
     let url = search::web_url(name);
-    let (tools, apps) = with_spinner("Looking for similar names…", || {
-        let tools = (kind != Some(Kind::App))
+    let wanted = |k: Kind| kind.is_none_or(|kind| kind == k);
+    let (tools, brews, apps) = with_spinner("Looking for similar names…", || {
+        let tools = wanted(Kind::Tool)
             .then(|| {
                 let release = find_nix()
                     .and_then(|nix| nix_eval(e, &nix, "nixpkgs#lib.trivial.release").ok());
@@ -642,17 +715,22 @@ fn not_found(e: &Env, name: &str, kind: Option<Kind>) -> String {
             })
             .flatten()
             .unwrap_or_default();
-        let apps = if kind == Some(Kind::Tool) {
-            Vec::new()
-        } else {
-            search::similar_casks(&e.home, name)
+        let similar = |k: Kind, brew: Brew| {
+            if wanted(k) {
+                search::similar_brews(&e.home, brew.api(), name)
+            } else {
+                Vec::new()
+            }
         };
-        Ok((tools, apps))
+        Ok((
+            tools,
+            similar(Kind::Formula, Brew::Formula),
+            similar(Kind::App, Brew::Cask),
+        ))
     })
     .unwrap_or_default();
     let mut msg = match kind {
-        Some(Kind::Tool) => format!("nixpkgs has no package called {name:?}."),
-        Some(Kind::App) => format!("Homebrew has no app called {name:?}."),
+        Some(kind) => format!("{} has no {} called {name:?}.", kind.source(), kind.what()),
         None => format!("neither nixpkgs nor Homebrew has anything called {name:?}."),
     };
     if !tools.is_empty() {
@@ -661,12 +739,20 @@ fn not_found(e: &Env, name: &str, kind: Option<Kind>) -> String {
             search::format(&tools)
         ));
     }
+    if !brews.is_empty() {
+        msg.push_str(&format!(
+            "\nCommand-line tools on Homebrew:\n  {}",
+            brews.join("\n  ")
+        ));
+    }
     if !apps.is_empty() {
         msg.push_str(&format!("\nMac apps on Homebrew:\n  {}", apps.join("\n  ")));
     }
     match kind {
-        Some(Kind::App) if apps.is_empty() => msg.push_str(&format!(" Try `brew search {name}`.")),
-        Some(Kind::App) => {}
+        Some(Kind::App | Kind::Formula) if apps.is_empty() && brews.is_empty() => {
+            msg.push_str(&format!(" Try `brew search {name}`."))
+        }
+        Some(Kind::App | Kind::Formula) => {}
         _ => msg.push_str(&format!("\nMore at {url}")),
     }
     msg

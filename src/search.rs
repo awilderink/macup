@@ -6,7 +6,7 @@ use std::process::Command;
 const BACKEND: &str = "https://search.nixos.org/backend";
 const PUBLIC_FRONTEND_LOGIN: &str = "aWVSALXpZv:X8gPHnzL52wFEekuxsfQ9cSh";
 const SHOWN: usize = 8;
-const CASK_API: &str = "https://formulae.brew.sh/api/cask";
+const BREW_API: &str = "https://formulae.brew.sh/api";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Lookup {
@@ -165,30 +165,36 @@ pub fn format(hits: &[Hit]) -> String {
         .join("\n")
 }
 
-pub fn cask_version(info_json: &[u8]) -> Option<String> {
+pub fn brew_version(info_json: &[u8]) -> Option<String> {
     let info: Value = serde_json::from_slice(info_json).ok()?;
-    let cask = info.get("casks").and_then(|c| c.get(0)).unwrap_or(&info);
-    let version = cask.get("version")?.as_str()?;
+    let item = ["casks", "formulae"]
+        .into_iter()
+        .find_map(|key| info.get(key).and_then(|list| list.get(0)))
+        .unwrap_or(&info);
+    let version = item
+        .get("version")
+        .or_else(|| item.pointer("/versions/stable"))?
+        .as_str()?;
     Some(version.split(',').next().unwrap_or(version).to_string())
 }
 
-pub fn cask_from_api(name: &str) -> Lookup {
+pub fn brew_from_api(kind: &str, name: &str) -> Lookup {
     let out = Command::new("/usr/bin/curl")
         .args(["-s", "-m", "5", "-w", "\n%{http_code}"])
-        .arg(format!("{CASK_API}/{name}.json"))
+        .arg(format!("{BREW_API}/{kind}/{name}.json"))
         .output();
     let Ok(out) = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()) else {
         return Lookup::Unknown("curl is missing".into());
     };
     match out.rsplit_once('\n') {
-        Some((body, "200")) => Lookup::Found(cask_version(body.as_bytes()).unwrap_or_default()),
+        Some((body, "200")) => Lookup::Found(brew_version(body.as_bytes()).unwrap_or_default()),
         Some((_, "404")) => Lookup::Missing,
         _ => Lookup::Unknown("formulae.brew.sh did not answer".into()),
     }
 }
 
-pub fn similar_casks(home: &Path, name: &str) -> Vec<String> {
-    std::fs::read_to_string(home.join("Library/Caches/Homebrew/api/cask_names.txt"))
+pub fn similar_brews(home: &Path, kind: &str, name: &str) -> Vec<String> {
+    std::fs::read_to_string(home.join(format!("Library/Caches/Homebrew/api/{kind}_names.txt")))
         .map(|names| similar(name, names.lines()))
         .unwrap_or_default()
 }

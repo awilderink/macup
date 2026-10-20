@@ -73,10 +73,10 @@ With "Optimize Mac Storage" on, some originals exist only in iCloud. `macup back
 
 Your tools and apps are listed in a Nix config in `~/.config/nix-darwin`. `macup apply` installs everything on those lists. Each apply and backup also saves the config to the drive, so a fresh Mac can start from it.
 
-- **`macup add <name>`** works out what a name is. When Homebrew has a Mac app by that name, it adds the app; otherwise it adds the command-line tool from nixpkgs. If both exist it picks the app and says so; `--tool` or `--app` decides instead. When a name is not found, you get the closest matches from search.nixos.org and Homebrew. Nothing is written unless every name was found, and your config's formatting and comments are kept.
+- **`macup add <name>`** works out what a name is. When Homebrew has a Mac app by that name, it adds the app; otherwise it adds the command-line tool from Homebrew, and only when Homebrew has neither, the one from nixpkgs. If more than one exists it picks in that order and says so; `--app`, `--brew` (a Homebrew tool) or `--tool` (a nixpkgs tool) decides instead. When a name is not found, you get the closest matches from search.nixos.org and Homebrew. Nothing is written unless every name was found, and your config's formatting and comments are kept.
 - **`macup remove <name>`** finds the name in your config and takes it out. For apps it also offers to uninstall them, because Homebrew is set up to leave unlisted apps alone. That also works for apps you installed by hand with `brew`.
 - **`macup apply --update`** updates everything to the latest versions; `--check` only checks that the config builds.
-- **`macup edit`** opens the config in your editor: `packages` (command-line tools), `apps` (Homebrew apps) or `system` (macOS and Nix settings).
+- **`macup edit`** opens the config in your editor: `packages` (command-line tools from nixpkgs), `apps` (Homebrew apps and tools) or `system` (macOS and Nix settings).
 
 Without Nix, macup is a backup and restore tool; install GNU rsync with `brew install rsync`.
 

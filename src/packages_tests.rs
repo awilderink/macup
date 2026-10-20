@@ -94,7 +94,11 @@ fn a_file_without_the_list_is_not_a_match() {
 fn real_config_is_editable() {
     let dir = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
         .join(".config/nix-darwin");
-    for (file, spec) in [("home.nix", &PACKAGES), ("flake.nix", &CASKS)] {
+    for (file, spec) in [
+        ("home.nix", &PACKAGES),
+        ("flake.nix", &CASKS),
+        ("flake.nix", &BREWS),
+    ] {
         let Ok(src) = std::fs::read_to_string(dir.join(file)) else {
             return;
         };
@@ -127,30 +131,72 @@ fn unknown() -> Lookup {
     Lookup::Unknown("offline".into())
 }
 
+fn lookups(app: Lookup, formula: Lookup, tool: Lookup) -> Vec<(Kind, Lookup)> {
+    vec![
+        (Kind::App, app),
+        (Kind::Formula, formula),
+        (Kind::Tool, tool),
+    ]
+}
+
 // A name that is both a Mac app and a nixpkgs package (docker, ollama,
 // tailscale) is almost always meant as the app on a Mac.
 #[test]
-fn a_mac_app_wins_over_a_package_of_the_same_name() {
-    assert_eq!(decide(&found(), &found()), Decision::Use(Kind::App));
-    assert_eq!(decide(&Lookup::Missing, &found()), Decision::Use(Kind::App));
+fn a_mac_app_wins_over_a_tool_of_the_same_name() {
     assert_eq!(
-        decide(&found(), &Lookup::Missing),
-        Decision::Use(Kind::Tool)
+        decide(&lookups(found(), found(), found())),
+        Decision::Use(Kind::App)
     );
-    assert_eq!(decide(&found(), &unknown()), Decision::Use(Kind::Tool));
+    assert_eq!(
+        decide(&lookups(found(), Lookup::Missing, Lookup::Missing)),
+        Decision::Use(Kind::App)
+    );
 }
 
-// Guessing while one side could not be checked would quietly add the wrong
-// kind of thing, so it must stop and ask for --tool or --app instead.
+// Command-line tools come from Homebrew when it has them, and from nixpkgs
+// only otherwise.
 #[test]
-fn does_not_guess_when_a_lookup_failed_and_the_other_found_nothing() {
+fn a_homebrew_tool_wins_over_a_nixpkgs_package() {
     assert_eq!(
-        decide(&Lookup::Missing, &Lookup::Missing),
+        decide(&lookups(Lookup::Missing, found(), found())),
+        Decision::Use(Kind::Formula)
+    );
+    assert_eq!(
+        decide(&lookups(unknown(), found(), Lookup::Missing)),
+        Decision::Use(Kind::Formula)
+    );
+    assert_eq!(
+        decide(&lookups(Lookup::Missing, Lookup::Missing, found())),
+        Decision::Use(Kind::Tool)
+    );
+    assert_eq!(
+        decide(&lookups(unknown(), unknown(), found())),
+        Decision::Use(Kind::Tool)
+    );
+}
+
+// Guessing while one source could not be checked and the others found nothing
+// would quietly add the wrong kind of thing, so it must stop and ask for a
+// flag instead.
+#[test]
+fn does_not_guess_when_a_lookup_failed_and_the_others_found_nothing() {
+    let missing = || Lookup::Missing;
+    assert_eq!(
+        decide(&lookups(missing(), missing(), missing())),
         Decision::NotFound
     );
-    assert_eq!(decide(&unknown(), &Lookup::Missing), Decision::CannotTell);
-    assert_eq!(decide(&Lookup::Missing, &unknown()), Decision::CannotTell);
-    assert_eq!(decide(&unknown(), &unknown()), Decision::CannotTell);
+    assert_eq!(
+        decide(&lookups(unknown(), missing(), missing())),
+        Decision::CannotTell
+    );
+    assert_eq!(
+        decide(&lookups(missing(), unknown(), missing())),
+        Decision::CannotTell
+    );
+    assert_eq!(
+        decide(&lookups(missing(), missing(), unknown())),
+        Decision::CannotTell
+    );
 }
 
 // One `add` can touch home.nix and flake.nix; nothing may be written until

@@ -56,12 +56,16 @@ fn formats_aligned_lines_and_shortens_long_descriptions() {
 }
 
 #[test]
-fn reads_the_cask_version_from_brew_and_from_the_api() {
+fn reads_the_version_from_brew_and_from_the_api() {
     let brew =
         br#"{"formulae":[],"casks":[{"token":"rekordbox","version":"7.2.19,20260914095016"}]}"#;
-    assert_eq!(cask_version(brew).as_deref(), Some("7.2.19"));
+    assert_eq!(brew_version(brew).as_deref(), Some("7.2.19"));
     let api = br#"{"token":"firefox","version":"144.0"}"#;
-    assert_eq!(cask_version(api).as_deref(), Some("144.0"));
+    assert_eq!(brew_version(api).as_deref(), Some("144.0"));
+    let brew = br#"{"formulae":[{"name":"bun","versions":{"stable":"1.4.3"}}],"casks":[]}"#;
+    assert_eq!(brew_version(brew).as_deref(), Some("1.4.3"));
+    let api = br#"{"name":"bun","versions":{"stable":"1.4.3","head":null}}"#;
+    assert_eq!(brew_version(api).as_deref(), Some("1.4.3"));
 }
 
 #[test]
