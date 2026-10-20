@@ -61,8 +61,8 @@ impl Env {
         match self.config.nix.enabled {
             Some(false) => Nix::OffByConfig,
             Some(true) => Nix::On,
-            None if self.has_nix_config()
-                || has_flake(&self.drive_nix_dir())
+            None if self.own_flake().is_some()
+                || !self.config.install.is_empty()
                 || crate::nix::find_nix().is_some() =>
             {
                 Nix::On
@@ -105,18 +105,24 @@ impl Env {
         self.photos_dir().join("originals")
     }
 
-    pub fn drive_nix_dir(&self) -> PathBuf {
-        self.volume.join("nix-darwin")
+    pub fn drive_config(&self) -> PathBuf {
+        self.volume.join(config::FILE_NAME)
     }
 
-    pub fn nix_dir(&self) -> PathBuf {
-        match self.config.nix.config.as_deref() {
-            Some(dir) => match dir.strip_prefix("~/") {
-                Some(rest) => self.home.join(rest),
-                None => PathBuf::from(dir),
-            },
-            None => self.home.join(".config").join("nix-darwin"),
-        }
+    pub fn drive_lock(&self) -> PathBuf {
+        self.volume.join("macup.lock")
+    }
+
+    pub fn flake_dir(&self) -> PathBuf {
+        self.home.join("Library/Caches/macup/nix")
+    }
+
+    pub fn own_flake(&self) -> Option<PathBuf> {
+        let dir = self.config.nix.config.as_deref()?;
+        Some(match dir.strip_prefix("~/") {
+            Some(rest) => self.home.join(rest),
+            None => PathBuf::from(dir),
+        })
     }
 
     pub fn nix_enabled(&self) -> bool {
@@ -133,10 +139,6 @@ impl Env {
 
     pub fn last_backup_file(&self) -> PathBuf {
         self.log_dir().join("last-backup")
-    }
-
-    pub fn has_nix_config(&self) -> bool {
-        has_flake(&self.nix_dir())
     }
 }
 

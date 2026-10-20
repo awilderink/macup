@@ -10,7 +10,7 @@ const BREW_API: &str = "https://formulae.brew.sh/api";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Lookup {
-    Found(String),
+    Found { name: String, detail: String },
     Missing,
     Unknown(String),
 }
@@ -165,12 +165,29 @@ pub fn format(hits: &[Hit]) -> String {
         .join("\n")
 }
 
-pub fn brew_version(info_json: &[u8]) -> Option<String> {
-    let info: Value = serde_json::from_slice(info_json).ok()?;
-    let item = ["casks", "formulae"]
+fn brew_item(info: &Value) -> &Value {
+    ["casks", "formulae"]
         .into_iter()
         .find_map(|key| info.get(key).and_then(|list| list.get(0)))
-        .unwrap_or(&info);
+        .unwrap_or(info)
+}
+
+pub fn brew_found(asked: &str, info_json: &[u8]) -> Lookup {
+    let info: Value = serde_json::from_slice(info_json).unwrap_or_default();
+    let name = ["token", "name"]
+        .into_iter()
+        .find_map(|key| brew_item(&info).get(key).and_then(Value::as_str))
+        .unwrap_or(asked)
+        .to_string();
+    Lookup::Found {
+        name,
+        detail: brew_version(info_json).unwrap_or_default(),
+    }
+}
+
+pub fn brew_version(info_json: &[u8]) -> Option<String> {
+    let info: Value = serde_json::from_slice(info_json).ok()?;
+    let item = brew_item(&info);
     let version = item
         .get("version")
         .or_else(|| item.pointer("/versions/stable"))?
@@ -187,7 +204,7 @@ pub fn brew_from_api(kind: &str, name: &str) -> Lookup {
         return Lookup::Unknown("curl is missing".into());
     };
     match out.rsplit_once('\n') {
-        Some((body, "200")) => Lookup::Found(brew_version(body.as_bytes()).unwrap_or_default()),
+        Some((body, "200")) => brew_found(name, body.as_bytes()),
         Some((_, "404")) => Lookup::Missing,
         _ => Lookup::Unknown("formulae.brew.sh did not answer".into()),
     }

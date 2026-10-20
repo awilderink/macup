@@ -1,12 +1,15 @@
+use crate::config::{Config, InstallConfig};
 use crate::env::{Env, Nix, has_flake};
 use crate::picker::shell_preset;
 use crate::selection::existing_paths;
-use crate::ui::{confirm, interactive, note, ok, select, step, warn};
+use crate::ui::{confirm, interactive, note, ok, step, warn};
 use crate::volume::check_mounted;
 use anyhow::{Context, Result, anyhow, bail};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const FLAKE: &str = include_str!("flake.nix");
+const HOST: &str = "macup";
 
 pub fn require_nix(e: &Env) -> Result<()> {
     match e.nix {
@@ -15,8 +18,8 @@ pub fn require_nix(e: &Env) -> Result<()> {
             "Nix is turned off for this drive ([nix] enabled = false in macup.toml); macup only backs up and restores here"
         ),
         Nix::Absent => bail!(
-            "there is no Nix here: Nix is not installed and there is no nix-darwin config in {} or on the backup drive",
-            e.nix_dir().display()
+            "there is no Nix here: Nix is not installed and {} lists no tools or apps",
+            e.drive_config().display()
         ),
     }
 }
@@ -72,8 +75,104 @@ fn path_str(p: &Path) -> String {
     p.display().to_string()
 }
 
-pub fn flake_host(e: &Env, nix: &Path) -> Result<String> {
-    let target = format!("{}#darwinConfigurations", path_str(&e.nix_dir()));
+pub fn drive_config(e: &Env) -> Result<Config> {
+    check_mounted(&e.volume)?;
+    if !e.drive_config().is_file() {
+        bail!(
+            "{} has no {}, which lists your tools and apps",
+            e.volume.display(),
+            crate::config::FILE_NAME
+        );
+    }
+    Config::load(&e.volume)
+}
+
+pub fn prepare(e: &Env) -> Result<PathBuf> {
+    if let Some(dir) = e.own_flake() {
+        if !has_flake(&dir) {
+            bail!(
+                "macup.toml's [nix] config points at {}, but there is no flake.nix there",
+                dir.display()
+            );
+        }
+        return Ok(dir);
+    }
+    let install = drive_config(e)?.install;
+    let lock = std::fs::read(e.drive_lock()).ok();
+    write_flake(&e.flake_dir(), &e.user(), &install, lock.as_deref())?;
+    Ok(e.flake_dir())
+}
+
+pub fn write_flake(
+    dir: &Path,
+    user: &str,
+    install: &InstallConfig,
+    lock: Option<&[u8]>,
+) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let mac = serde_json::json!({
+        "user": user,
+        "brew": install.brew,
+        "cask": install.cask,
+        "nix": install.nix,
+    });
+    replace(&dir.join("flake.nix"), FLAKE.as_bytes())?;
+    replace(
+        &dir.join("mac.json"),
+        serde_json::to_string_pretty(&mac)?.as_bytes(),
+    )?;
+    if let Some(lock) = lock {
+        replace(&dir.join("flake.lock"), lock)?;
+    }
+    Ok(())
+}
+
+fn replace(path: &Path, contents: &[u8]) -> Result<()> {
+    if std::fs::read(path).is_ok_and(|old| old == contents) {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(path);
+    std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))
+}
+
+fn save_lock(e: &Env, dir: &Path) {
+    if e.own_flake().is_some() {
+        return;
+    }
+    let Ok(lock) = std::fs::read(dir.join("flake.lock")) else {
+        return;
+    };
+    if std::fs::read(e.drive_lock()).is_ok_and(|old| old == lock) {
+        return;
+    }
+    match std::fs::write(e.drive_lock(), lock) {
+        Ok(()) => ok(format!(
+            "pinned versions saved to {}",
+            e.drive_lock().display()
+        )),
+        Err(err) => warn(format!(
+            "could not save the pinned versions to {}: {err}",
+            e.drive_lock().display()
+        )),
+    }
+}
+
+fn lock(nix: &str, dir: &str) -> Result<()> {
+    let out = Command::new(nix)
+        .args(nix_args(&["flake", "lock", dir]))
+        .output()
+        .with_context(|| format!("starting {nix}"))?;
+    if !out.status.success() {
+        bail!(
+            "pinning versions failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn flake_host(nix: &Path, dir: &Path) -> Result<String> {
+    let target = format!("{}#darwinConfigurations", path_str(dir));
     let out = Command::new(nix)
         .args(nix_args(&[
             "eval",
@@ -86,7 +185,7 @@ pub fn flake_host(e: &Env, nix: &Path) -> Result<String> {
     if !out.status.success() {
         bail!(
             "cannot read darwinConfigurations from {}: {}",
-            e.nix_dir().display(),
+            dir.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -115,7 +214,7 @@ pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
 pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Result<()> {
     if std::env::consts::ARCH != "aarch64" {
         bail!(
-            "this configuration targets Apple Silicon; update flake.nix before using it on Intel"
+            "macup's setup targets Apple Silicon; on Intel, point [nix] config in macup.toml at your own flake"
         );
     }
     step("Apple Command Line Tools");
@@ -143,22 +242,33 @@ pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Res
     ok(nix_version(&nix));
 
     step("Configuration");
-    ensure_config(e)?;
-    let host = flake_host(e, &nix)?;
-    ok(format!("{}#{host}", e.nix_dir().display()));
+    let dir = prepare(e)?;
+    let host = match e.own_flake() {
+        Some(_) => flake_host(&nix, &dir)?,
+        None => HOST.to_string(),
+    };
+    match e.own_flake() {
+        Some(_) => ok(format!("{}#{host}", dir.display())),
+        None => ok(format!(
+            "tools and apps from {}",
+            e.drive_config().display()
+        )),
+    }
     let nix_s = path_str(&nix);
-    let dir = path_str(&e.nix_dir());
+    let dir_s = path_str(&dir);
 
     if update {
-        ensure_lock_owned(e)?;
         step("Updating pinned packages");
-        run_attached(&nix_s, &nix_args(&["flake", "update", "--flake", &dir]))
+        run_attached(&nix_s, &nix_args(&["flake", "update", "--flake", &dir_s]))
             .context("updating failed")?;
+    } else {
+        lock(&nix_s, &dir_s)?;
     }
+    save_lock(e, &dir);
 
     if check {
         step("Building (check only, nothing is changed)");
-        let target = format!("{dir}#darwinConfigurations.{host}.system");
+        let target = format!("{dir_s}#darwinConfigurations.{host}.system");
         run_attached(&nix_s, &nix_args(&["build", "--no-link", &target]))
             .context("the configuration does not build")?;
         ok("configuration builds");
@@ -166,12 +276,12 @@ pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Res
     }
 
     step("Applying system configuration (sudo may ask for your password)");
-    let flake = format!("{dir}#{host}");
+    let flake = format!("{dir_s}#{host}");
     let mut args = vec!["-H".to_string(), nix_s.clone()];
     args.extend(nix_args(&[
         "run",
         "--inputs-from",
-        &dir,
+        &dir_s,
         "nix-darwin#darwin-rebuild",
         "--",
         "switch",
@@ -179,108 +289,8 @@ pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Res
         &flake,
     ]));
     run_attached("sudo", &args).context("applying failed")?;
-    ensure_lock_owned(e)?;
     ok("system configuration applied");
-
-    if check_mounted(&e.volume).is_ok()
-        && let Ok(bin) = crate::rsync::find_rsync(e)
-    {
-        match sync_config_to_drive(e, &bin) {
-            Ok(()) => ok(format!("config saved to {}", e.drive_nix_dir().display())),
-            Err(err) => warn(format!("could not copy the config to the drive: {err:#}")),
-        }
-    }
     Ok(())
-}
-
-pub fn ensure_config(e: &Env) -> Result<()> {
-    if e.has_nix_config() {
-        return Ok(());
-    }
-    if !has_flake(&e.drive_nix_dir()) {
-        bail!(
-            "no config at {} and none on the backup drive ({}) — connect the drive",
-            e.nix_dir().display(),
-            e.drive_nix_dir().display()
-        );
-    }
-    note("copying the config from the backup drive");
-    copy_dir(&e.drive_nix_dir(), &e.nix_dir())
-}
-
-fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        let target = dst.join(entry.file_name());
-        if ft.is_dir() {
-            copy_dir(&entry.path(), &target)?;
-        } else if ft.is_file() {
-            std::fs::copy(entry.path(), &target)?;
-        }
-    }
-    Ok(())
-}
-
-fn ensure_lock_owned(e: &Env) -> Result<()> {
-    let lock = e.nix_dir().join("flake.lock");
-    let Ok(meta) = std::fs::metadata(&lock) else {
-        return Ok(());
-    };
-    if meta.uid() == unsafe { libc::getuid() } {
-        return Ok(());
-    }
-    note(format!(
-        "flake.lock is owned by root; giving it back to {}",
-        e.user()
-    ));
-    run_attached(
-        "sudo",
-        &[
-            "chown".into(),
-            unsafe { libc::getuid() }.to_string(),
-            path_str(&lock),
-        ],
-    )
-}
-
-pub fn sync_config_to_drive(e: &Env, rsync_bin: &str) -> Result<()> {
-    if !e.nix_enabled() || !e.has_nix_config() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(e.drive_nix_dir())?;
-    let out = Command::new(rsync_bin)
-        .args([
-            "-a",
-            "--delete",
-            &crate::rsync::dir_arg(&e.nix_dir()),
-            &crate::rsync::dir_arg(&e.drive_nix_dir()),
-        ])
-        .output()?;
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    Ok(())
-}
-
-pub fn config_in_sync(e: &Env) -> bool {
-    fn same(a: &Path, b: &Path) -> bool {
-        let Ok(entries) = std::fs::read_dir(a) else {
-            return false;
-        };
-        entries.flatten().all(|entry| {
-            let (pa, pb) = (entry.path(), b.join(entry.file_name()));
-            match entry.file_type() {
-                Ok(ft) if ft.is_dir() => same(&pa, &pb),
-                Ok(_) => {
-                    matches!((std::fs::read(&pa), std::fs::read(&pb)), (Ok(x), Ok(y)) if x == y)
-                }
-                Err(_) => false,
-            }
-        })
-    }
-    same(&e.nix_dir(), &e.drive_nix_dir())
 }
 
 fn offer_shell_restore(e: &Env) -> Result<()> {
@@ -313,35 +323,10 @@ fn offer_shell_restore(e: &Env) -> Result<()> {
     crate::restore::shell_restore(&src, &paths)
 }
 
-pub fn edit(e: &Env, section: Option<String>) -> Result<()> {
-    let section = match section {
-        Some(s) => s,
-        None if interactive() => select(
-            "What do you want to change?",
-            &[
-                (
-                    "Command-line tools from nixpkgs (home.nix)".into(),
-                    "packages".to_string(),
-                ),
-                (
-                    "Apps and tools installed with Homebrew (flake.nix)".into(),
-                    "apps".to_string(),
-                ),
-                (
-                    "macOS and Nix settings (darwin.nix)".into(),
-                    "system".to_string(),
-                ),
-            ],
-        )?,
-        None => "packages".into(),
-    };
-    let file = match section.as_str() {
-        "packages" => "home.nix",
-        "apps" => "flake.nix",
-        "system" => "darwin.nix",
-        other => bail!("unknown section {other:?} (packages, apps or system)"),
-    };
-    ensure_config(e)?;
+pub fn edit(e: &Env) -> Result<()> {
+    drive_config(e)?;
+    crate::packages::upgrade_file(e)?;
+    let before = drive_config(e)?.install;
     let mut editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_default();
@@ -352,15 +337,33 @@ pub fn edit(e: &Env, section: Option<String>) -> Result<()> {
             "vi".into()
         };
     }
-    run_attached(
-        "/bin/sh",
-        &[
-            "-c".into(),
-            format!("{editor} \"$1\""),
-            "macup-edit".into(),
-            path_str(&e.nix_dir().join(file)),
-        ],
-    )?;
+    loop {
+        run_attached(
+            "/bin/sh",
+            &[
+                "-c".into(),
+                format!("{editor} \"$1\""),
+                "macup-edit".into(),
+                path_str(&e.drive_config()),
+            ],
+        )?;
+        let checked = drive_config(e).and_then(|after| {
+            if e.own_flake().is_some() {
+                return Ok(());
+            }
+            crate::packages::check_edited(e, &before, &after.install)
+        });
+        match checked {
+            Ok(()) => break,
+            Err(err) if interactive() => {
+                warn(format!("{err:#}"));
+                if !confirm("Open macup.toml again to fix it?", true)? {
+                    return Err(err);
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
     offer_apply(e)
 }
 
@@ -375,3 +378,7 @@ pub fn offer_apply(e: &Env) -> Result<()> {
     }
     apply(e, false, false)
 }
+
+#[cfg(test)]
+#[path = "nix_tests.rs"]
+mod tests;

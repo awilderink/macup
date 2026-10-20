@@ -6,7 +6,7 @@ Back up your Mac to an external drive, bring it back after a reinstall, and keep
 - **Restore:** browse the backup as a tree and pick what to bring back. Files that are newer on the Mac are kept.
 - **Tools and apps:** `macup add firefox ripgrep` installs a Mac app and a command-line tool and remembers both, so a fresh Mac gets them back.
 
-macup is a single binary that lives on the backup drive itself, so it works on a Mac that has just been reinstalled. It is written in Rust for Apple Silicon Macs and uses rsync for files, Nix (nix-darwin and Home Manager) and Homebrew for tools and apps, and Apple's PhotoKit for photos that only exist in iCloud.
+macup is a single binary that lives on the backup drive itself, so it works on a Mac that has just been reinstalled. It is written in Rust for Apple Silicon Macs and uses rsync for files, Nix (nix-darwin) and Homebrew for tools and apps, and Apple's PhotoKit for photos that only exist in iCloud.
 
 ## Getting started
 
@@ -18,7 +18,7 @@ macup is a single binary that lives on the backup drive itself, so it works on a
 
 It walks you through three steps, each of which you can skip:
 
-1. **Tools, apps and settings.** It installs what is missing (Apple's Command Line Tools, Nix, your config from the drive) and applies it. If the Command Line Tools installer appears, finish it and run `macup setup` again.
+1. **Tools, apps and settings.** It installs what is missing (Apple's Command Line Tools, Nix), then the tools and apps listed on the drive. If the Command Line Tools installer appears, finish it and run `macup setup` again.
 2. **Files and folders.** Pick what to bring back from the backup. You see a preview first, including any files that are newer on this Mac.
 3. **Photos.** It shows the size of your backed-up Photos library next to the Mac's free space and asks before copying it back.
 
@@ -33,8 +33,8 @@ It walks you through three steps, each of which you can skip:
 | Add a tool or app | `macup add htop firefox` |
 | Remove one | `macup remove firefox` |
 | See how things stand | `macup status` |
-| Apply changes to your tools and settings | `macup apply` |
-| Edit your config by hand | `macup edit` |
+| Install what the lists say | `macup apply` |
+| Edit `macup.toml` by hand | `macup edit` |
 
 Every command has `--help`.
 
@@ -50,7 +50,7 @@ Every command has `--help`.
 
 ## Restoring
 
-`macup restore` opens the backup as a tree. Space ticks a file or folder, → opens a folder, `p` offers presets (shell config, SSH keys, Nix config and your own), and Enter continues.
+`macup restore` opens the backup as a tree. Space ticks a file or folder, → opens a folder, `p` offers presets (shell config, SSH keys and your own), and Enter continues.
 
 - **You see a preview first:** how much will be copied and which files are newer on this Mac.
 - **Newer files on the Mac are kept.** A restore never deletes anything. If files differ, you choose: keep the newer ones, only add missing files, or take the backup's version.
@@ -71,12 +71,27 @@ With "Optimize Mac Storage" on, some originals exist only in iCloud. `macup back
 
 ## Tools and apps
 
-Your tools and apps are listed in a Nix config in `~/.config/nix-darwin`. `macup apply` installs everything on those lists. Each apply and backup also saves the config to the drive, so a fresh Mac can start from it.
+Your tools and apps are listed in `macup.toml` on the drive, so a fresh Mac gets them back. Each list is named after what installs it:
 
-- **`macup add <name>`** works out what a name is. When Homebrew has a Mac app by that name, it adds the app; otherwise it adds the command-line tool from Homebrew, and only when Homebrew has neither, the one from nixpkgs. If more than one exists it picks in that order and says so; `--app`, `--brew` (a Homebrew tool) or `--tool` (a nixpkgs tool) decides instead. When a name is not found, you get the closest matches from search.nixos.org and Homebrew. Nothing is written unless every name was found, and your config's formatting and comments are kept.
-- **`macup remove <name>`** finds the name in your config and takes it out. For apps it also offers to uninstall them, because Homebrew is set up to leave unlisted apps alone. That also works for apps you installed by hand with `brew`.
-- **`macup apply --update`** updates everything to the latest versions; `--check` only checks that the config builds.
-- **`macup edit`** opens the config in your editor: `packages` (command-line tools from nixpkgs), `apps` (Homebrew apps and tools) or `system` (macOS and Nix settings).
+```toml
+[install]
+brew = ["bat", "gh", "ripgrep"]
+cask = ["claude-code", "ghostty", "raycast"]
+nix = ["curl", "git", "rustup"]
+```
+
+- **`brew`** — Homebrew formulae: command-line tools Homebrew builds or unpacks.
+- **`cask`** — Homebrew casks: ready-made downloads from the maker. Usually Mac apps, but also some commands (`claude-code`) and fonts.
+- **`nix`** — packages from nixpkgs, for tools Homebrew won't put on your PATH, such as curl and rustup.
+
+Each name is listed once; the same name under two lists, or a list name macup doesn't know, stops with an error that says what to fix. `macup apply` installs everything on the lists. Behind it is a fixed nix-darwin setup built into macup; the versions it pins are kept next to `macup.toml` in `macup.lock`, so every Mac installs the same ones. The lists need the drive: `add`, `remove`, `edit` and `apply` ask you to connect it.
+
+- **`macup add <name>`** works out which list a name belongs in. It looks for a cask first, then a formula, then a nixpkgs package, picks the first it finds and says what else exists; `--cask`, `--brew` or `--nix` decides instead. It writes the name Homebrew uses now, so `docker` is listed as `docker-desktop`. When a name is not found, you get the closest matches from search.nixos.org and Homebrew. Nothing is written unless every name was found, and the formatting and comments in `macup.toml` are kept.
+- **`macup remove <name>`** finds the name in whichever list holds it and takes it out. For Homebrew it also offers to uninstall it, because Homebrew is set up to leave unlisted things alone. That also works for things you installed by hand with `brew`.
+- **`macup apply --update`** updates everything to the latest versions; `--check` only checks that everything can be built.
+- **`macup edit`** opens `macup.toml` in your editor. When you save, it checks the names you added; if one doesn't exist it offers to reopen the file, and it warns about names Homebrew has renamed. Then it offers to apply.
+
+A drive set up by an earlier macup, with a `[tools]` section and an `apps` list, keeps working; the next `add`, `remove` or `edit` renames them to `[install]` and `cask`.
 
 Without Nix, macup is a backup and restore tool; install GNU rsync with `brew install rsync`.
 
@@ -85,8 +100,8 @@ Without Nix, macup is a backup and restore tool; install GNU rsync with `brew in
 ```
 /Volumes/Backup/
 ├── macup              this tool
-├── macup.toml         settings for this drive
-├── nix-darwin/        your Nix config, for a fresh Mac
+├── macup.toml         settings, tools and apps
+├── macup.lock         the versions your tools are pinned to
 └── macs/
     └── <Mac name>/    one folder per Mac
         ├── home/      the home folder backup
@@ -97,7 +112,7 @@ macup recognises its drive by the `macup.toml` at the top. When you connect a dr
 
 ## Settings
 
-`macup.toml` on the drive holds your own rules and presets. Everything in it is optional:
+`macup.toml` on the drive holds your tools and apps (see [Tools and apps](#tools-and-apps)) and your own rules and presets. Everything in it is optional:
 
 ```toml
 [backup]
@@ -113,14 +128,13 @@ paths = [".claude"]
 
 [nix]
 enabled = true
-config = "~/.config/nix-darwin"
 ```
 
 - **`backup.rules`** are rsync filter rules: `- ` skips, `+ ` includes, and the first match wins. Paths starting with `/` are relative to your home folder. Your rules come after macup's built-in skips for caches and junk and before its built-in structure, so a `+` rule can bring back a folder under `~/Library`, but not the caches inside it. The built-in rules are in [`rules/`](rules).
 - **`restore.presets`** appear under `p` in the restore picker.
-- **`[nix]`:** without it, the Nix commands are available whenever Nix is installed or a config exists. `enabled = false` turns them off, and `config` points at a config somewhere else.
+- **`[nix]`:** without it, the Nix commands are available whenever Nix is installed or the lists have something in them. `enabled = false` turns them off. To change macup's setup itself, point `config = "~/my-flake"` at your own nix-darwin flake; macup then applies that instead, and you list tools and apps in it yourself and `[install]` is not used.
 
-Never put SSH keys, API keys or other secrets in the Nix config.
+Never put SSH keys, API keys or other secrets in `macup.toml`.
 
 Environment variables, mostly for testing:
 
@@ -138,4 +152,4 @@ Logs of every backup and restore are in `~/.backup-logs`.
 ./build.sh
 ```
 
-This checks formatting and lints, runs the tests, builds `~/.local/bin/macup` and, when the backup drive is connected, copies the binary to the drive. It needs Rust and Apple's Command Line Tools; both come with the Nix config.
+This checks formatting and lints, runs the tests, builds `~/.local/bin/macup` and, when the backup drive is connected, copies the binary to the drive. It needs Rust (`rustup`) and Apple's Command Line Tools.

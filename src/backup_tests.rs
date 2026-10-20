@@ -135,10 +135,6 @@ fn nix_can_be_turned_off_per_drive() {
     config.nix.config = Some("~/dotfiles/darwin".into());
     let e = e.with_config(config);
     assert!(!e.nix_enabled());
-    assert_eq!(e.nix_dir(), e.home.join("dotfiles/darwin"));
+    assert_eq!(e.own_flake(), Some(e.home.join("dotfiles/darwin")));
     assert!(crate::nix::require_nix(&e).is_err());
-    assert!(
-        crate::nix::sync_config_to_drive(&e, "/nonexistent/rsync").is_ok(),
-        "sync must be skipped, not attempted"
-    );
 }

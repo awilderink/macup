@@ -18,6 +18,7 @@ mod selection;
 mod setup;
 mod sizer;
 mod status;
+mod tools;
 mod ui;
 mod volume;
 
@@ -127,7 +128,7 @@ enum Command {
         check: bool,
     },
     #[command(
-        about = "Add a command-line tool or a Mac app; macup works out which and offers to install it"
+        about = "Add a tool or app; macup works out which installer has it and offers to install it"
     )]
     Add {
         #[command(flatten)]
@@ -141,11 +142,9 @@ enum Command {
     },
     #[command(
         visible_alias = "rm",
-        about = "Remove a command-line tool or a Mac app from your config and offer to uninstall it"
+        about = "Remove a tool or app from your lists and offer to uninstall it"
     )]
     Remove {
-        #[command(flatten)]
-        kind: KindFlags,
         #[arg(
             required = true,
             value_name = "NAME",
@@ -153,14 +152,8 @@ enum Command {
         )]
         names: Vec<String>,
     },
-    #[command(about = "Edit your config by hand in your editor, then offer to apply it")]
-    Edit {
-        #[arg(
-            value_parser = ["packages", "apps", "system"],
-            help = "packages: command-line tools from nixpkgs (home.nix); apps: Homebrew apps and tools (flake.nix); system: macOS and Nix settings (darwin.nix). Asks when left out."
-        )]
-        section: Option<String>,
-    },
+    #[command(about = "Open macup.toml in your editor, then offer to apply it")]
+    Edit,
     #[command(about = "Drive, last backup, Photos, and tools and apps at a glance")]
     Status {
         #[arg(
@@ -181,22 +174,32 @@ enum Command {
 #[derive(clap::Args)]
 #[group(multiple = false)]
 struct KindFlags {
-    #[arg(long, help = "only look for a Mac app (Homebrew cask)")]
-    app: bool,
-    #[arg(long, help = "only look for a command-line tool in Homebrew")]
+    #[arg(long, help = "only look for a Homebrew formula (install.brew)")]
     brew: bool,
-    #[arg(long, help = "only look for a command-line tool in nixpkgs")]
+    #[arg(long, help = "only look for a Homebrew cask (install.cask)")]
+    cask: bool,
+    #[arg(long, help = "only look for a nixpkgs package (install.nix)")]
+    nix: bool,
+    #[arg(long, hide = true)]
+    app: bool,
+    #[arg(long, hide = true)]
     tool: bool,
 }
 
 impl KindFlags {
-    fn forced(&self) -> Option<packages::Kind> {
-        match (self.app, self.brew, self.tool) {
-            (true, _, _) => Some(packages::Kind::App),
-            (_, true, _) => Some(packages::Kind::Formula),
-            (_, _, true) => Some(packages::Kind::Tool),
-            _ => None,
+    fn forced(&self) -> Result<Option<packages::Kind>> {
+        if self.app {
+            anyhow::bail!("--app is now --cask");
         }
+        if self.tool {
+            anyhow::bail!("--tool is now --nix");
+        }
+        Ok(match (self.brew, self.cask, self.nix) {
+            (true, _, _) => Some(packages::Kind::Brew),
+            (_, true, _) => Some(packages::Kind::Cask),
+            (_, _, true) => Some(packages::Kind::Nix),
+            _ => None,
+        })
     }
 }
 
@@ -215,10 +218,7 @@ fn main() {
 
 fn dispatch(e: &Env, command: Command) -> Result<()> {
     match command {
-        Command::Apply { .. }
-        | Command::Add { .. }
-        | Command::Remove { .. }
-        | Command::Edit { .. }
+        Command::Apply { .. } | Command::Add { .. } | Command::Remove { .. } | Command::Edit
             if !e.nix_enabled() =>
         {
             nix::require_nix(e)
@@ -270,9 +270,9 @@ fn dispatch(e: &Env, command: Command) -> Result<()> {
         ),
         Command::Setup => setup::run(e),
         Command::Apply { update, check } => nix::apply(e, update, check),
-        Command::Add { kind, names } => packages::add(e, &names, kind.forced()),
-        Command::Remove { kind, names } => packages::remove(e, &names, kind.forced()),
-        Command::Edit { section } => nix::edit(e, section),
+        Command::Add { kind, names } => packages::add(e, &names, kind.forced()?),
+        Command::Remove { names } => packages::remove(e, &names),
+        Command::Edit => nix::edit(e),
         Command::Init { drive } => config::init_drive(&drive),
         Command::Status {
             photos,

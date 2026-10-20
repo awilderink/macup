@@ -97,8 +97,7 @@ fn situation(e: &Env) -> Situation {
         .and_then(|m| m.modified())
         .ok()
         .map(|t| SystemTime::now().duration_since(t).unwrap_or_default());
-    let set_up =
-        !e.nix_enabled() || (e.has_nix_config() && Path::new("/run/current-system").exists());
+    let set_up = !e.nix_enabled() || Path::new("/run/current-system").exists();
     Situation {
         drive,
         backup_on_drive,
@@ -127,7 +126,7 @@ fn options(e: &Env, s: &Situation) -> Vec<(String, Action)> {
             ("Add a tool or app".to_string(), Action::Add),
             ("Apply the configuration".to_string(), Action::Apply),
             ("Update all tools".to_string(), Action::Update),
-            ("Edit the configuration".to_string(), Action::Edit),
+            ("Edit macup.toml".to_string(), Action::Edit),
         ]);
     }
     if s.drive == Drive::Ready {
@@ -184,7 +183,7 @@ pub fn run(mut e: Env) -> Result<()> {
             Action::Add => add(&e),
             Action::Apply => nix::apply(&e, false, false),
             Action::Update => nix::apply(&e, true, false),
-            Action::Edit => nix::edit(&e, None),
+            Action::Edit => nix::edit(&e),
             Action::Quit => Ok(()),
         });
     }

@@ -1,7 +1,7 @@
 use crate::access::{full_disk_access, terminal_name};
 use crate::env::{Env, Nix};
-use crate::nix::{config_in_sync, find_nix};
-use crate::ui::{human_bytes, plural, title, warning};
+use crate::nix::find_nix;
+use crate::ui::{human_bytes, title, warning};
 use crate::volume::{check_mounted, free_space, nearly_full};
 use std::path::Path;
 
@@ -61,37 +61,30 @@ pub fn show(e: &Env) {
         match e.nix {
             Nix::On => tools_and_apps(e, mounted),
             Nix::OffByConfig => "not managed by macup (Nix is off in macup.toml)".into(),
-            Nix::Absent => "not managed by macup (no Nix config here or on the drive)".into(),
+            Nix::Absent => {
+                "not managed by macup (Nix is not installed and macup.toml lists nothing)".into()
+            }
         },
     );
 }
 
 fn tools_and_apps(e: &Env, mounted: bool) -> String {
-    if !e.has_nix_config() {
-        return warning("not set up yet — run macup setup").to_string();
-    }
-    let mut v = match crate::packages::counts(&e.nix_dir()) {
-        Some((tools, apps)) => format!(
-            "{} · {}",
-            plural(tools, "tool", "tools"),
-            plural(apps, "app", "apps")
-        ),
-        None => warning("the config cannot be read").to_string(),
+    let install = &e.config.install;
+    let mut v = match e.own_flake() {
+        Some(dir) => format!("from your own flake at {}", dir.display()),
+        None if !mounted => {
+            return warning("connect the backup drive, which lists them").to_string();
+        }
+        None if install.is_empty() => "none listed yet — `macup add <name>` adds one".into(),
+        None => install
+            .lists()
+            .iter()
+            .map(|(installer, list)| format!("{} {installer}", list.len()))
+            .collect::<Vec<_>>()
+            .join(" · "),
     };
     if find_nix().is_none() || !Path::new("/run/current-system").exists() {
         v.push_str(&warning(" · not installed yet — run macup setup").to_string());
-    }
-    if mounted {
-        if config_in_sync(e) {
-            v.push_str(" · saved on the drive");
-        } else {
-            v.push_str(
-                &warning(
-                    " · changes not saved on the drive yet (the next apply or backup saves them)",
-                )
-                .to_string(),
-            );
-        }
     }
     v
 }

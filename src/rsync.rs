@@ -70,9 +70,9 @@ fn locate_rsync(e: &Env) -> Result<String> {
         .filter(|_| e.nix_enabled())
         .ok_or_else(|| no_rsync(e))?;
     let mut args = vec!["build", "nixpkgs#rsync", "--no-link", "--print-out-paths"];
-    let nix_dir = e.nix_dir().display().to_string();
-    if e.has_nix_config() {
-        args.extend(["--inputs-from", nix_dir.as_str()]);
+    let flake = crate::nix::prepare(e).map(|dir| dir.display().to_string());
+    if let Ok(dir) = &flake {
+        args.extend(["--inputs-from", dir.as_str()]);
     }
     let out = Command::new(&nix)
         .args(crate::nix::nix_args(&args))

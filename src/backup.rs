@@ -172,11 +172,6 @@ fn backup_home(e: &Env, o: &Options, bin: &str, rules: &str) -> Result<()> {
     {
         warn(format!("could not record the backup time: {err}"));
     }
-    if let Err(err) = crate::nix::sync_config_to_drive(e, bin) {
-        warn(format!(
-            "could not copy the Nix config to the drive: {err:#}"
-        ));
-    }
     Ok(())
 }
 

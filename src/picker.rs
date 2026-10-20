@@ -28,11 +28,7 @@ pub fn shell_preset() -> Preset {
 }
 
 pub fn presets(config: &Config) -> Vec<Preset> {
-    let mut all = vec![
-        shell_preset(),
-        preset("SSH keys and config", &[".ssh"]),
-        preset("Nix config", &[".config/nix-darwin"]),
-    ];
+    let mut all = vec![shell_preset(), preset("SSH keys and config", &[".ssh"])];
     all.extend(config.restore.presets.iter().cloned());
     all
 }
