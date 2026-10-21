@@ -52,7 +52,7 @@ Every command has `--help`.
 
 ## Restoring
 
-`macup restore` opens the backup as a tree. Space ticks a file or folder, → opens a folder, `p` offers presets (shell config, SSH keys and your own), and Enter continues.
+`macup restore` opens the backup as a tree. Space ticks a file or folder, → opens a folder, `p` offers the presets from `macup.toml`, and Enter continues.
 
 - **You see a preview first:** how much will be copied and which files are newer on this Mac.
 - **Newer files on the Mac are kept.** A restore never deletes anything. If files differ, you choose: keep the newer ones, only add missing files, or take the backup's version.

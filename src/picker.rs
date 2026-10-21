@@ -1,4 +1,4 @@
-use crate::config::{Config, Preset};
+use crate::config::Preset;
 use crate::errors::cancelled;
 use crate::selection::{CheckState, Selection, existing_paths, join_rel};
 use crate::sizer::Sizer;
@@ -12,26 +12,6 @@ use ratatui::widgets::Paragraph;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-
-fn preset(name: &str, paths: &[&str]) -> Preset {
-    Preset {
-        name: name.into(),
-        paths: paths.iter().map(|p| p.to_string()).collect(),
-    }
-}
-
-pub fn shell_preset() -> Preset {
-    preset(
-        "Shell: zsh, Oh My Zsh, Cargo env",
-        &[".zshrc", ".zprofile", ".zshenv", ".oh-my-zsh", ".cargo/env"],
-    )
-}
-
-pub fn presets(config: &Config) -> Vec<Preset> {
-    let mut all = vec![shell_preset(), preset("SSH keys and config", &[".ssh"])];
-    all.extend(config.restore.presets.iter().cloned());
-    all
-}
 
 struct Node {
     name: String,
@@ -301,6 +281,10 @@ impl Picker {
                 }
             }
             "c" => self.sel.clear(),
+            "p" if self.presets.is_empty() => {
+                self.status =
+                    "no presets yet; add them as [[restore.presets]] in macup.toml".into();
+            }
             "p" => self.showing_presets = true,
             _ => {}
         }

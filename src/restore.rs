@@ -2,7 +2,7 @@ use crate::access::full_disk_access_guard;
 use crate::copy::{Action, Existing, Job, Spec, log_path};
 use crate::env::Env;
 use crate::photos;
-use crate::picker::{pick_paths, presets};
+use crate::picker::pick_paths;
 use crate::selection::at_or_under;
 use crate::ui::{
     confirm_or_cancel, human_bytes, interactive, note, ok, plural, report_result, run_job, select,
@@ -77,7 +77,7 @@ pub fn run_from(e: &Env, mut req: Request) -> Result<()> {
         if !interactive() {
             bail!("pass --path (repeatable) or run in a terminal to pick files");
         }
-        req.paths = pick_paths(&e.backup_home(), presets(&e.config))?;
+        req.paths = pick_paths(&e.backup_home(), e.config.restore.presets.clone())?;
     } else {
         req.mode.get_or_insert(Existing::KeepNewer);
         for p in req.paths.iter_mut() {
@@ -314,10 +314,6 @@ fn run_restore(e: &Env, target: &Path, paths: &[String], mode: Existing) -> Resu
         fix_ssh_permissions(&target.join(".ssh"));
     }
     report_result("Restore", &res)
-}
-
-pub fn shell_restore(e: &Env, paths: &[String]) -> Result<()> {
-    run_restore(e, &e.home, paths, Existing::KeepNewer)
 }
 
 fn fix_ssh_permissions(dir: &Path) {

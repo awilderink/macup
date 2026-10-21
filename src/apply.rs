@@ -1,7 +1,5 @@
 use crate::config::{Config, InstallConfig};
 use crate::env::{Env, env_var};
-use crate::picker::shell_preset;
-use crate::selection::existing_paths;
 use crate::ui::{confirm, interactive, note, ok, step, warn};
 use crate::volume::check_mounted;
 use anyhow::{Context, Result, anyhow, bail};
@@ -81,11 +79,7 @@ fn write_brewfile(e: &Env, install: &InstallConfig) -> Result<PathBuf> {
 }
 
 pub fn apply(e: &Env, update: bool, check: bool) -> Result<()> {
-    install_and_apply(e, update, check, "macup apply")?;
-    if check {
-        return Ok(());
-    }
-    offer_shell_restore(e)
+    install_and_apply(e, update, check, "macup apply")
 }
 
 pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Result<()> {
@@ -182,36 +176,6 @@ fn install_homebrew(rerun: &str) -> Result<PathBuf> {
     find_brew().ok_or_else(|| {
         anyhow!("Homebrew was installed but cannot be found — open a new terminal and run `{rerun}` again")
     })
-}
-
-fn offer_shell_restore(e: &Env) -> Result<()> {
-    if e.home.join(".oh-my-zsh").exists() {
-        return Ok(());
-    }
-    let Ok(src) = crate::machines::open(e, None, false) else {
-        return Ok(());
-    };
-    let paths = existing_paths(&src.backup_home(), &shell_preset().paths);
-    if paths.is_empty() {
-        return Ok(());
-    }
-    if !interactive() {
-        note(format!(
-            "restore your shell config with: macup restore --path {}",
-            paths.join(" --path ")
-        ));
-        return Ok(());
-    }
-    if !confirm(
-        &format!(
-            "Restore your shell config from the backup? ({})",
-            paths.join(", ")
-        ),
-        true,
-    )? {
-        return Ok(());
-    }
-    crate::restore::shell_restore(&src, &paths)
 }
 
 pub fn edit(e: &Env) -> Result<()> {
