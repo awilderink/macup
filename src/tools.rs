@@ -16,20 +16,33 @@ fn install_table(doc: &mut DocumentMut) -> Result<&mut dyn TableLike> {
 pub fn upgrade(src: &str) -> Result<Option<String>> {
     let mut doc = parse_doc(src)?;
     let mut changed = doc.remove("nix").is_some();
-    if let Some(backup) = doc.get_mut("backup").and_then(Item::as_table_like_mut)
-        && let Some(rules) = backup.remove("rules")
-    {
-        let Some(rules) = rules.as_array() else {
-            bail!("backup.rules must be a list");
-        };
-        let rules: Vec<String> = rules
-            .iter()
-            .filter_map(|v| v.as_str().map(str::to_string))
-            .collect();
-        let (skip, keep) = convert_rules(&rules)?;
-        backup.insert("skip", Item::Value(Value::Array(lines(&skip))));
-        backup.insert("keep", Item::Value(Value::Array(lines(&keep))));
-        changed = true;
+    if let Some(backup) = doc.get_mut("backup") {
+        if let Some(table) = backup.as_table_like_mut()
+            && let Some(rules) = table.remove("rules")
+        {
+            let Some(rules) = rules.as_array() else {
+                bail!("backup.rules must be a list");
+            };
+            let rules: Vec<String> = rules
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            let (skip, include) = convert_rules(&rules)?;
+            table.insert("skip", Item::Value(Value::Array(lines(&skip))));
+            table.insert("include", Item::Value(Value::Array(lines(&include))));
+            changed = true;
+        }
+        if let Some(table) = backup.as_table_like()
+            && table.contains_key("keep")
+        {
+            if table.contains_key("include") {
+                bail!(
+                    "[backup] has both keep and include; keep is now called include, so move everything into include"
+                );
+            }
+            rename(backup, "keep", "include");
+            changed = true;
+        }
     }
     if let Some(mut tools) = doc.remove("tools") {
         if doc.contains_key("install") {
@@ -37,18 +50,10 @@ pub fn upgrade(src: &str) -> Result<Option<String>> {
                 "there is both an old [tools] and an [install] section; move everything into [install]"
             );
         }
-        if let Some(table) = tools.as_table_mut() {
-            if let Some((key, apps)) = table.remove_entry("apps") {
-                let cask = Key::new("cask").with_leaf_decor(key.leaf_decor().clone());
-                table.insert_formatted(&cask, apps);
-            }
-        } else if let Some(table) = tools.as_table_like_mut() {
-            if let Some(apps) = table.remove("apps") {
-                table.insert("cask", apps);
-            }
-        } else {
+        if !tools.is_table_like() {
             bail!("tools must be a section");
         }
+        rename(&mut tools, "apps", "cask");
         doc.insert("install", tools);
         changed = true;
     }
@@ -87,6 +92,19 @@ pub fn upgrade(src: &str) -> Result<Option<String>> {
         }
     }
     Ok(changed.then(|| doc.to_string()))
+}
+
+fn rename(item: &mut Item, from: &str, to: &str) {
+    if let Some(table) = item.as_table_mut() {
+        if let Some((key, value)) = table.remove_entry(from) {
+            let renamed = Key::new(to).with_leaf_decor(key.leaf_decor().clone());
+            table.insert_formatted(&renamed, value);
+        }
+    } else if let Some(table) = item.as_table_like_mut()
+        && let Some(value) = table.remove(from)
+    {
+        table.insert(to, value);
+    }
 }
 
 fn lines(items: &[String]) -> Array {

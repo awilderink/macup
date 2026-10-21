@@ -13,7 +13,7 @@ impl Pattern {
     pub fn parse(text: &str) -> Result<Pattern> {
         if let Some(rest) = text.strip_prefix("- ").or_else(|| text.strip_prefix("+ ")) {
             bail!(
-                "{text:?} looks like an old rsync rule; write {rest:?} under skip or keep instead"
+                "{text:?} looks like an old rsync rule; write {rest:?} under skip or include instead"
             );
         }
         if text.contains("***") {

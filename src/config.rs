@@ -146,38 +146,38 @@ pub const COMES_WITH_MACOS: [&str; 2] = ["curl", "git"];
 #[serde(default, deny_unknown_fields)]
 pub struct BackupConfig {
     pub skip: Vec<String>,
-    pub keep: Vec<String>,
+    pub include: Vec<String>,
 }
 
 pub fn convert_rules(rules: &[String]) -> Result<(Vec<String>, Vec<String>)> {
-    let (mut skip, mut keep): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let (mut skip, mut include): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
     for rule in rules {
         let (sign, pattern) = match (rule.strip_prefix("- "), rule.strip_prefix("+ ")) {
             (Some(p), _) => ('-', p),
             (_, Some(p)) => ('+', p),
             _ => bail!(
-                "backup rule {rule:?} must start with \"+ \" or \"- \"; better, move it under skip or keep"
+                "backup rule {rule:?} must start with \"+ \" or \"- \"; better, move it under skip or include"
             ),
         };
         let base = pattern.strip_suffix("/***").unwrap_or(pattern);
         if sign == '+' {
             if !base.starts_with('/') {
                 bail!(
-                    "backup rule {rule:?} can't be converted; write it under keep as a path from your home folder"
+                    "backup rule {rule:?} can't be converted; write it under include as a path from your home folder"
                 );
             }
             let base = base.trim_end_matches('/').to_string();
-            if !keep.contains(&base) {
-                keep.push(base);
+            if !include.contains(&base) {
+                include.push(base);
             }
             continue;
         }
-        let inside_a_keep = keep
+        let inside_an_include = include
             .iter()
             .find(|k| !base.starts_with('/') || at_or_under(base.trim_end_matches('/'), k));
-        if let Some(k) = inside_a_keep {
+        if let Some(k) = inside_an_include {
             bail!(
-                "backup rule {rule:?} comes after \"+ {k}\" and could skip things inside it; with skip and keep, skips always win, so move these two to skip and keep by hand"
+                "backup rule {rule:?} comes after \"+ {k}\" and could skip things inside it; with skip and include, skips always win, so move these two to skip and include by hand"
             );
         }
         let base = base.to_string();
@@ -185,7 +185,7 @@ pub fn convert_rules(rules: &[String]) -> Result<(Vec<String>, Vec<String>)> {
             skip.push(base);
         }
     }
-    Ok((skip, keep))
+    Ok((skip, include))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -230,14 +230,14 @@ impl Config {
             crate::pattern::Pattern::parse(skip)
                 .with_context(|| format!("backup.skip {skip:?}"))?;
         }
-        for keep in &self.backup.keep {
-            crate::rules::check_keep(keep)?;
+        for include in &self.backup.include {
+            crate::rules::check_include(include)?;
         }
         Ok(())
     }
 }
 
-pub const TEMPLATE: &str = "[backup]\nskip = []\nkeep = []\n\n[restore]\npresets = []\n";
+pub const TEMPLATE: &str = "[backup]\nskip = []\ninclude = []\n\n[restore]\npresets = []\n";
 
 pub fn init_drive(drive: &Path) -> Result<()> {
     crate::volume::check_mounted(drive)?;

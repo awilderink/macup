@@ -132,9 +132,9 @@ fn the_rust_setting_becomes_the_rust_formula() {
 }
 
 // A drive whose backup rules were written for rsync gets them rewritten as
-// skip and keep, one per line, with the rest of the file untouched.
+// skip and include, one per line, with the rest of the file untouched.
 #[test]
-fn upgrades_rsync_rules_to_skip_and_keep() {
+fn upgrades_rsync_rules_to_skip_and_include() {
     let old = "# my drive\n[backup]\nrules = [\n  \"- /go\",\n  \"+ /Library/Pioneer/\",\n  \"+ /Library/Pioneer/***\",\n  \"- *.iso\",\n]\n\n[install]\nbrew = [\"bat\"]\n";
     let err = upgrade(old).unwrap_err().to_string();
     assert!(err.contains("*.iso"), "{err}");
@@ -143,11 +143,27 @@ fn upgrades_rsync_rules_to_skip_and_keep() {
     assert!(out.starts_with("# my drive\n[backup]\n"), "{out}");
     assert!(out.contains("skip = [\n  \"/go\",\n]"), "{out}");
     assert!(
-        out.contains("keep = [\n  \"/Library/Pioneer\",\n]"),
+        out.contains("include = [\n  \"/Library/Pioneer\",\n]"),
         "{out}"
     );
     assert!(!out.contains("rules"), "{out}");
     let config = crate::config::Config::parse(&out).unwrap();
-    assert_eq!(config.backup.keep, names(&["/Library/Pioneer"]));
+    assert_eq!(config.backup.include, names(&["/Library/Pioneer"]));
     assert_eq!(config.install.brew, names(&["bat"]));
+}
+
+// keep was renamed to include; a drive that still says keep must back up the
+// same folders, and its comments must survive the rename.
+#[test]
+fn renames_keep_to_include() {
+    let old = "[backup]\nskip = [\"/go\"]\n# rekordbox\nkeep = [\"/Library/Pioneer\"]\n";
+    let out = upgrade(old).unwrap().unwrap();
+    assert!(
+        out.contains("# rekordbox\ninclude = [\"/Library/Pioneer\"]"),
+        "{out}"
+    );
+    let config = crate::config::Config::parse(old).unwrap();
+    assert_eq!(config.backup.include, names(&["/Library/Pioneer"]));
+    let both = "[backup]\nkeep = [\"/Library/A\"]\ninclude = [\"/Library/B\"]\n";
+    assert!(upgrade(both).unwrap_err().to_string().contains("both"));
 }

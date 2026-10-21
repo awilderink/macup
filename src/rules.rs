@@ -22,7 +22,7 @@ pub struct Filter {
     skip: Vec<Pattern>,
     left_out: Vec<Pattern>,
     only: Vec<String>,
-    keep: Vec<Pattern>,
+    include: Vec<Pattern>,
 }
 
 fn parse_all(texts: &[String]) -> Result<Vec<Pattern>> {
@@ -31,12 +31,12 @@ fn parse_all(texts: &[String]) -> Result<Vec<Pattern>> {
 
 fn builtin() -> Result<Filter> {
     let b: Builtin = toml::from_str(BUILTIN).context("reading the built-in rules")?;
-    let mut keep = Vec::new();
+    let mut include = Vec::new();
     let mut only = Vec::new();
     for (folder, entries) in &b.only {
         let folder = folder.trim_matches('/').to_string();
         for entry in entries {
-            keep.push(Pattern::parse(&format!("/{folder}/{entry}"))?);
+            include.push(Pattern::parse(&format!("/{folder}/{entry}"))?);
         }
         only.push(folder);
     }
@@ -45,7 +45,7 @@ fn builtin() -> Result<Filter> {
         skip: parse_all(&b.skip)?,
         left_out: parse_all(&b.left_out)?,
         only,
-        keep,
+        include,
     })
 }
 
@@ -64,7 +64,7 @@ impl Filter {
         let mut f = BUILTIN_FILTER.clone();
         f.skip.extend(parse_all(&config.backup.skip)?);
         f.skip.extend(parse_all(extra_skips)?);
-        f.keep.extend(parse_all(&config.backup.keep)?);
+        f.include.extend(parse_all(&config.backup.include)?);
         Ok(f)
     }
 
@@ -78,10 +78,10 @@ impl Filter {
         if !self.left_out_by_default(rel, is_dir) {
             return true;
         }
-        if self.keep.iter().any(|p| p.covers(rel, is_dir)) {
+        if self.include.iter().any(|p| p.covers(rel, is_dir)) {
             return true;
         }
-        is_dir && self.keep.iter().any(|p| p.leads_into(rel))
+        is_dir && self.include.iter().any(|p| p.leads_into(rel))
     }
 
     fn left_out_by_default(&self, rel: &str, is_dir: bool) -> bool {
@@ -93,15 +93,15 @@ impl Filter {
     }
 }
 
-pub fn check_keep(text: &str) -> Result<()> {
+pub fn check_include(text: &str) -> Result<()> {
     let pattern = Pattern::parse(text)?;
     if !pattern.anchored() {
-        bail!("keep {text:?} must be a path from your home folder, starting with /");
+        bail!("include {text:?} must be a path from your home folder, starting with /");
     }
     let rel = text.trim_matches('/');
     if !BUILTIN_FILTER.left_out_by_default(rel, true) {
         bail!(
-            "keep {text:?} is backed up anyway; keep only brings back what macup leaves out by default (~/Library outside Application Support, most of ~/.claude, and caches like ~/.npm and ~/.rustup)"
+            "include {text:?} is backed up anyway; include only adds back what macup leaves out by default (~/Library outside Application Support, most of ~/.claude, and caches like ~/.npm and ~/.rustup)"
         );
     }
     Ok(())

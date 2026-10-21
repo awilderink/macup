@@ -8,20 +8,20 @@ fn missing_file_means_defaults() {
 }
 
 #[test]
-fn reads_skip_keep_and_presets() {
+fn reads_skip_include_and_presets() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join(FILE_NAME),
-        "[backup]\nskip = [\"/go\"]\nkeep = [\"/Library/Pioneer\"]\n\n[[restore.presets]]\nname = \"Claude\"\npaths = [\".claude\"]\n",
+        "[backup]\nskip = [\"/go\"]\ninclude = [\"/Library/Pioneer\"]\n\n[[restore.presets]]\nname = \"Claude\"\npaths = [\".claude\"]\n",
     )
     .unwrap();
     let c = Config::load(dir.path()).unwrap();
     assert_eq!(c.backup.skip, vec!["/go"]);
-    assert_eq!(c.backup.keep, vec!["/Library/Pioneer"]);
+    assert_eq!(c.backup.include, vec!["/Library/Pioneer"]);
     assert_eq!(c.restore.presets[0].paths, vec![".claude"]);
 }
 
-// Rules written for rsync keep working: each becomes a skip or a keep that
+// Rules written for rsync keep working: each becomes a skip or an include that
 // selects the same files.
 #[test]
 fn converts_old_rsync_rules() {
@@ -38,7 +38,7 @@ fn converts_old_rsync_rules() {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let (skip, keep) = convert_rules(&rules).unwrap();
+    let (skip, include) = convert_rules(&rules).unwrap();
     assert_eq!(
         skip,
         vec![
@@ -50,10 +50,10 @@ fn converts_old_rsync_rules() {
             "/.claude/projects",
         ]
     );
-    assert_eq!(keep, vec!["/Library/Pioneer"]);
+    assert_eq!(include, vec!["/Library/Pioneer"]);
     let c = Config::parse("[backup]\nrules = [\"- /go\", \"+ /Library/Pioneer/***\"]\n").unwrap();
     assert_eq!(
-        (c.backup.skip, c.backup.keep),
+        (c.backup.skip, c.backup.include),
         (
             vec!["/go".to_string()],
             vec!["/Library/Pioneer".to_string()]
@@ -61,7 +61,7 @@ fn converts_old_rsync_rules() {
     );
 }
 
-// With rsync a skip after a keep could not reach inside it; with skip and keep,
+// With rsync a skip after a keep could not reach inside it; with skip and include,
 // skips always win. Converting such a pair would change what is backed up, so
 // it stops and says so.
 #[test]
@@ -85,7 +85,7 @@ fn rejects_unknown_keys_and_malformed_rules() {
     assert!(Config::load(dir.path()).is_err());
     std::fs::write(
         dir.path().join(FILE_NAME),
-        "[backup]\nkeep = [\"/Documents\"]\n",
+        "[backup]\ninclude = [\"/Documents\"]\n",
     )
     .unwrap();
     assert!(Config::load(dir.path()).is_err());
@@ -94,7 +94,7 @@ fn rejects_unknown_keys_and_malformed_rules() {
 #[test]
 fn template_parses() {
     let c = Config::parse(TEMPLATE).unwrap();
-    assert!(c.backup.skip.is_empty() && c.backup.keep.is_empty());
+    assert!(c.backup.skip.is_empty() && c.backup.include.is_empty());
 }
 
 // A drive written while macup still used Nix must keep loading: the nix list

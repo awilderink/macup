@@ -1,9 +1,9 @@
 use super::*;
 
-fn backup(skip: &[&str], keep: &[&str]) -> Filter {
+fn backup(skip: &[&str], include: &[&str]) -> Filter {
     let mut config = Config::default();
     config.backup.skip = skip.iter().map(|s| s.to_string()).collect();
-    config.backup.keep = keep.iter().map(|s| s.to_string()).collect();
+    config.backup.include = include.iter().map(|s| s.to_string()).collect();
     Filter::backup(&config, &[]).unwrap()
 }
 
@@ -35,10 +35,10 @@ fn claude_is_backed_up_only_for_its_settings_and_memory() {
     assert!(f.copies(".claude/settings.json", false));
 }
 
-// keep brings back what macup leaves out by default, but never what a skip
-// rules out: a kept app folder still loses its caches.
+// include brings back what macup leaves out by default, but never what a skip
+// rules out: an included app folder still loses its caches.
 #[test]
-fn keep_brings_back_what_is_left_out_but_skips_still_win() {
+fn include_brings_back_what_is_left_out_but_skips_still_win() {
     let f = backup(
         &["/Library/Pioneer/Logs"],
         &["/Library/Pioneer", "/.npm/config"],
@@ -62,9 +62,9 @@ fn leveldb_logs_are_kept_although_logs_are_skipped() {
 }
 
 #[test]
-fn keep_must_point_at_something_left_out() {
-    assert!(check_keep("/Library/Pioneer").is_ok());
-    assert!(check_keep("/.rustup/settings.toml").is_ok());
-    assert!(check_keep("/Documents").is_err());
-    assert!(check_keep("Pioneer").is_err());
+fn include_must_point_at_something_left_out() {
+    assert!(check_include("/Library/Pioneer").is_ok());
+    assert!(check_include("/.rustup/settings.toml").is_ok());
+    assert!(check_include("/Documents").is_err());
+    assert!(check_include("Pioneer").is_err());
 }

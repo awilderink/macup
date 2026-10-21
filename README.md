@@ -42,7 +42,7 @@ Every command has `--help`.
 
 `macup backup` copies your home folder to the drive, then your Photos library (see [Photos](#photos)).
 
-- **Only what matters is copied.** Caches, logs, `node_modules`, toolchains that install themselves again, and per-machine macOS state are skipped. From `~/Library` only `Application Support` is kept. You can skip more or keep something back (see [Settings](#settings)).
+- **Only what matters is copied.** Caches, logs, `node_modules`, toolchains that install themselves again, and per-machine macOS state are skipped. From `~/Library` only `Application Support` is kept. You can skip more or include something back (see [Settings](#settings)).
 - **Nothing is deleted.** Files you deleted on the Mac stay in the backup. To remove them as well, use `macup backup --mirror` (in the menu: "Clean up the backup"). It first shows how many files would go and asks.
 - **First backup from a new Mac:** if the drive already holds a backup for this Mac, macup warns first. A fresh Mac's default settings would otherwise replace your old ones, so restore what you need before backing up.
 - **Full Disk Access:** give your terminal Full Disk Access in System Settings → Privacy & Security, or protected folders in `~/Library` are left out. `macup status` tells you whether it has it.
@@ -110,22 +110,22 @@ macup recognises its drive by the `macup.toml` at the top. When you connect a dr
 
 ## Settings
 
-`macup.toml` on the drive holds your tools and apps (see [Tools and apps](#tools-and-apps)) and what to skip or keep in backups, and your restore presets. Everything in it is optional:
+`macup.toml` on the drive holds your tools and apps (see [Tools and apps](#tools-and-apps)) and what to skip or include in backups, and your restore presets. Everything in it is optional:
 
 ```toml
 [backup]
 skip = ["/go", "/code/**/target/", "*.iso"]
-keep = ["/Library/Pioneer"]
+include = ["/Library/Pioneer"]
 
 [[restore.presets]]
 name = "Claude Code config"
 paths = [".claude"]
 ```
 
-- **`backup.skip`** leaves things out of the backup. **`backup.keep`** brings back something macup leaves out by default. Skips always win: a kept folder still loses its caches.
+- **`backup.skip`** leaves things out of the backup. **`backup.include`** adds back something macup leaves out by default. Skips always win: an included folder still loses its caches. Both take paths from your home folder, so `/Library/Pioneer` means `~/Library/Pioneer`.
 - **Patterns.** A pattern starting with `/` is a path from your home folder (`/go`). One without `/` matches a name anywhere (`node_modules`, `*.iso`). `*` matches within a name and `**` across folders (`/code/**/target/`). A trailing `/` matches folders only. A matching folder covers everything inside it.
-- **What macup leaves out by default:** `~/Library` except `Application Support`, `~/.claude` except your settings and memory, and toolchain caches like `~/.npm` and `~/.rustup`. `keep` works only there, and always takes a path starting with `/`. Caches, logs, `node_modules` and similar junk are always skipped. The built-in rules are in [`rules/builtin.toml`](rules/builtin.toml).
-- **Rules written for rsync** (`rules = ["- /go", "+ /Library/Pioneer/***"]`) still work: they are read as `skip` and `keep`, and the next `add`, `remove` or `edit` writes them that way. A `-` rule placed after a `+` rule that could reach inside it stops with a message, because with `skip` and `keep` the skip would win.
+- **What macup leaves out by default:** `~/Library` except `Application Support`, `~/.claude` except your settings and memory, and toolchain caches like `~/.npm` and `~/.rustup`. `include` works only there, and always takes a path starting with `/`. Caches, logs, `node_modules` and similar junk are always skipped. The built-in rules are in [`rules/builtin.toml`](rules/builtin.toml).
+- **Rules written for rsync** (`rules = ["- /go", "+ /Library/Pioneer/***"]`) still work: they are read as `skip` and `include`, and the next `add`, `remove` or `edit` writes them that way. A `-` rule placed after a `+` rule that could reach inside it stops with a message, because with `skip` and `include` the skip would win. A `keep` list, the earlier name for `include`, is renamed the same way.
 - **`restore.presets`** appear under `p` in the restore picker.
 
 Never put SSH keys, API keys or other secrets in `macup.toml`.
