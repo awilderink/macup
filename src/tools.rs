@@ -52,24 +52,39 @@ pub fn upgrade(src: &str) -> Result<Option<String>> {
         doc.insert("install", tools);
         changed = true;
     }
-    if let Some(install) = doc.get_mut("install").and_then(Item::as_table_like_mut)
-        && let Some(nix) = install.remove("nix")
-    {
-        let Some(nix) = nix.as_array() else {
-            bail!("install.nix must be a list");
-        };
-        for name in nix.iter().filter_map(|v| v.as_str()) {
-            match name {
-                "rustup" => {
-                    install.insert("rust", toml_edit::value(true));
+    if let Some(install) = doc.get_mut("install").and_then(Item::as_table_like_mut) {
+        let mut rust = false;
+        if let Some(nix) = install.remove("nix") {
+            let Some(nix) = nix.as_array() else {
+                bail!("install.nix must be a list");
+            };
+            for name in nix.iter().filter_map(|v| v.as_str()) {
+                match name {
+                    "rustup" => rust = true,
+                    name if COMES_WITH_MACOS.contains(&name) => {}
+                    name => bail!(
+                        "install.nix lists {name}, but macup no longer installs from nixpkgs; move it to brew (`macup add --brew {name}`) or delete it"
+                    ),
                 }
-                name if COMES_WITH_MACOS.contains(&name) => {}
-                name => bail!(
-                    "install.nix lists {name}, but macup no longer installs from nixpkgs; move it to brew (`macup add --brew {name}`) or delete it"
-                ),
+            }
+            changed = true;
+        }
+        if let Some(on) = install.remove("rust") {
+            let Some(on) = on.as_bool() else {
+                bail!("install.rust must be true or false");
+            };
+            rust |= on;
+            changed = true;
+        }
+        if rust {
+            let brew = list_mut(install, "brew")?;
+            if !brew
+                .iter()
+                .any(|v| v.as_str().is_some_and(|s| s.eq_ignore_ascii_case("rust")))
+            {
+                insert_sorted(brew, "rust");
             }
         }
-        changed = true;
     }
     Ok(changed.then(|| doc.to_string()))
 }
@@ -89,19 +104,9 @@ fn lines(items: &[String]) -> Array {
     list
 }
 
-pub fn set_rust(src: &str) -> Result<String> {
-    let mut doc = parse_doc(src)?;
-    install_table(&mut doc)?.insert("rust", toml_edit::value(true));
-    Ok(doc.to_string())
-}
-
 pub fn edit(src: &str, key: &str, names: &[String], add: bool) -> Result<(String, Vec<String>)> {
     let mut doc = parse_doc(src)?;
-    let list = install_table(&mut doc)?
-        .entry(key)
-        .or_insert(Item::Value(Value::Array(Array::new())))
-        .as_array_mut()
-        .ok_or_else(|| anyhow!("install.{key} in macup.toml must be a list of names"))?;
+    let list = list_mut(install_table(&mut doc)?, key)?;
     let mut changed = Vec::new();
     for name in names {
         match (add, position(list, name)) {
@@ -114,6 +119,14 @@ pub fn edit(src: &str, key: &str, names: &[String], add: bool) -> Result<(String
         changed.push(name.clone());
     }
     Ok((doc.to_string(), changed))
+}
+
+fn list_mut<'a>(install: &'a mut dyn TableLike, key: &str) -> Result<&'a mut Array> {
+    install
+        .entry(key)
+        .or_insert(Item::Value(Value::Array(Array::new())))
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("install.{key} in macup.toml must be a list of names"))
 }
 
 fn position(list: &Array, name: &str) -> Option<usize> {

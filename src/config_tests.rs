@@ -105,10 +105,9 @@ fn reads_a_drive_from_the_nix_days() {
         "[install]\nbrew = [\"bat\"]\nnix = [\"curl\", \"git\", \"rustup\"]\n\n[nix]\nenabled = true\n",
     )
     .unwrap();
-    assert!(c.install.rust);
-    assert_eq!(c.install.brew, vec!["bat"]);
+    assert_eq!(c.install.brew, vec!["bat", "rust"]);
     let c = Config::parse("[install]\nnix = [\"git\"]\n").unwrap();
-    assert!(!c.install.rust);
+    assert!(c.install.is_empty());
 }
 
 // Anything else on the old nix list has no new home macup could guess, so it
@@ -131,8 +130,7 @@ fn install_error(install: &str) -> String {
 fn an_unknown_list_name_is_an_error_with_a_suggestion() {
     assert!(install_error("apps = [\"ghostty\"]").contains("did you mean \"cask\""));
     assert!(install_error("formulae = [\"bat\"]").contains("did you mean \"brew\""));
-    assert!(install_error("rustup = true").contains("did you mean \"rust\""));
-    assert!(install_error("stuff = []").contains("brew, cask and rust"));
+    assert!(install_error("stuff = []").contains("brew and cask"));
     assert!(install_error("mas = []").contains("aren't supported yet"));
 }
 

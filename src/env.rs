@@ -73,10 +73,6 @@ impl Env {
         self.home.join("Library/Caches/macup")
     }
 
-    pub fn rustup(&self) -> PathBuf {
-        self.home.join(".cargo/bin/rustup")
-    }
-
     pub fn log_dir(&self) -> PathBuf {
         self.home.join(".backup-logs")
     }

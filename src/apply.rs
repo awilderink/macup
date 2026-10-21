@@ -10,7 +10,6 @@ use std::process::Command;
 
 const HOMEBREW_INSTALLER: &str =
     "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh";
-const RUSTUP_INSTALLER: &str = "https://sh.rustup.rs";
 const NIX_HOMEBREW_MARKER: &str = "/opt/homebrew/Library/.homebrew-is-managed-by-nix";
 
 fn which(name: &str) -> Option<PathBuf> {
@@ -30,9 +29,8 @@ pub fn find_brew() -> Option<PathBuf> {
     })
 }
 
-pub fn installed(e: &Env, install: &InstallConfig) -> bool {
-    (!install.has_homebrew_items() || find_brew().is_some())
-        && (!install.rust || e.rustup().exists())
+pub fn installed(install: &InstallConfig) -> bool {
+    install.is_empty() || find_brew().is_some()
 }
 
 fn run_attached(program: &str, args: &[String]) -> Result<()> {
@@ -115,80 +113,54 @@ pub fn install_and_apply(e: &Env, update: bool, check: bool, rerun: &str) -> Res
     }
     ok("installed");
 
-    if install.has_homebrew_items() {
-        step("Homebrew");
-        let brew = match find_brew() {
-            Some(brew) => Some(brew),
-            None if check => {
-                note("not installed yet; `macup apply` installs it");
-                None
-            }
-            None => Some(install_homebrew(rerun)?),
-        };
-        if let Some(brew) = brew {
-            ok(path_str(&brew));
-            step("Tools and apps");
-            let file = path_str(&write_brewfile(e, &install)?);
-            let brew = path_str(&brew);
-            if check {
-                let out = Command::new(&brew)
-                    .args(["bundle", "check", "--verbose", &format!("--file={file}")])
-                    .output()
-                    .with_context(|| format!("starting {brew}"))?;
-                let text = format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&out.stdout),
-                    String::from_utf8_lossy(&out.stderr)
-                );
-                text.lines()
-                    .filter_map(|l| l.trim().strip_prefix("→ "))
-                    .for_each(note);
-                if out.status.success() {
-                    ok("everything listed is installed");
-                } else {
-                    note("`macup apply` installs what is missing");
-                }
-            } else {
-                if update {
-                    run_attached(&brew, &["update".into()]).context("updating Homebrew failed")?;
-                }
-                let upgrade = if update { "--upgrade" } else { "--no-upgrade" };
-                run_attached(
-                    &brew,
-                    &[
-                        "bundle".into(),
-                        "install".into(),
-                        upgrade.into(),
-                        format!("--file={file}"),
-                    ],
-                )
-                .context("Homebrew could not install everything")?;
-                ok("tools and apps installed");
-            }
+    step("Homebrew");
+    let brew = match find_brew() {
+        Some(brew) => brew,
+        None if check => {
+            note("not installed yet; `macup apply` installs it");
+            return Ok(());
         }
-    }
-
-    if install.rust {
-        step("Rust");
-        let rustup = e.rustup();
-        if !rustup.exists() {
-            if check {
-                note("not installed yet; `macup apply` installs rustup and the stable toolchain");
-                return Ok(());
-            }
-            run_attached(
-                "/bin/sh",
-                &[
-                    "-c".into(),
-                    format!("/usr/bin/curl --proto '=https' --tlsv1.2 -sSf {RUSTUP_INSTALLER} | /bin/sh -s -- -y --no-modify-path --default-toolchain stable"),
-                ],
-            )
-            .context("installing rustup failed")?;
-        } else if update && !check {
-            run_attached(&path_str(&rustup), &["update".into()]).context("updating Rust failed")?;
+        None => install_homebrew(rerun)?,
+    };
+    ok(path_str(&brew));
+    step("Tools and apps");
+    let file = path_str(&write_brewfile(e, &install)?);
+    let brew = path_str(&brew);
+    if check {
+        let out = Command::new(&brew)
+            .args(["bundle", "check", "--verbose", &format!("--file={file}")])
+            .output()
+            .with_context(|| format!("starting {brew}"))?;
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        text.lines()
+            .filter_map(|l| l.trim().strip_prefix("→ "))
+            .for_each(note);
+        if out.status.success() {
+            ok("everything listed is installed");
+        } else {
+            note("`macup apply` installs what is missing");
         }
-        ok(path_str(&rustup));
+        return Ok(());
     }
+    if update {
+        run_attached(&brew, &["update".into()]).context("updating Homebrew failed")?;
+    }
+    let upgrade = if update { "--upgrade" } else { "--no-upgrade" };
+    run_attached(
+        &brew,
+        &[
+            "bundle".into(),
+            "install".into(),
+            upgrade.into(),
+            format!("--file={file}"),
+        ],
+    )
+    .context("Homebrew could not install everything")?;
+    ok("tools and apps installed");
     Ok(())
 }
 

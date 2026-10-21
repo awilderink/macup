@@ -97,7 +97,7 @@ fn situation(e: &Env) -> Situation {
         .and_then(|m| m.modified())
         .ok()
         .map(|t| SystemTime::now().duration_since(t).unwrap_or_default());
-    let set_up = apply::installed(e, &e.config.install);
+    let set_up = apply::installed(&e.config.install);
     Situation {
         drive,
         backup_on_drive,

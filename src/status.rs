@@ -65,16 +65,13 @@ fn tools_and_apps(e: &Env, mounted: bool) -> String {
     if install.is_empty() {
         return "none listed yet — `macup add <name>` adds one".into();
     }
-    let mut parts: Vec<String> = install
+    let mut v = install
         .lists()
         .iter()
         .map(|(kind, list)| format!("{} {}", list.len(), kind.key()))
-        .collect();
-    if install.rust {
-        parts.push("rust".into());
-    }
-    let mut v = parts.join(" · ");
-    if !crate::apply::installed(e, install) {
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if !crate::apply::installed(install) {
         v.push_str(&warning(" · not installed yet — run macup setup").to_string());
     }
     v

@@ -89,29 +89,46 @@ fn upgrades_an_old_layout_in_place() {
         out.contains("# apps from Homebrew\ncask = [\n  \"ghostty\",\n]"),
         "{out}"
     );
-    assert!(out.contains("rust = true"), "{out}");
     for gone in ["[tools]", "apps =", "nix", "curl"] {
         assert!(!out.contains(gone), "{gone} left in {out}");
     }
     let config = crate::config::Config::parse(&out).unwrap();
     assert_eq!(config.install.cask, names(&["ghostty"]));
-    assert!(config.install.rust);
+    assert_eq!(config.install.brew, names(&["rust"]));
     assert_eq!(upgrade(&out).unwrap(), None);
 }
 
 #[test]
 fn an_old_layout_still_loads() {
     let config = crate::config::Config::parse(OLD).unwrap();
-    assert!(config.install.rust);
+    assert_eq!(config.install.brew, names(&["rust"]));
     assert_eq!(config.install.cask, names(&["ghostty"]));
 }
 
+// Rust used to be its own setting, installed with rustup; it now comes from
+// Homebrew like everything else, so the setting becomes the rust formula.
 #[test]
-fn turns_on_rust_keeping_the_lists() {
-    let out = set_rust(CONFIG).unwrap();
+fn the_rust_setting_becomes_the_rust_formula() {
+    let out = upgrade("[install]\nbrew = [\"bat\", \"ripgrep\"]\nrust = true\n")
+        .unwrap()
+        .unwrap();
     let config = crate::config::Config::parse(&out).unwrap();
-    assert!(config.install.rust);
-    assert_eq!(config.install.brew, names(&["bat", "ripgrep"]));
+    assert_eq!(config.install.brew, names(&["bat", "ripgrep", "rust"]));
+    assert!(!out.contains("rust = "), "{out}");
+    let out = upgrade("[install]\nbrew = [\"Rust\"]\nrust = true\n")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        crate::config::Config::parse(&out).unwrap().install.brew,
+        names(&["Rust"])
+    );
+    let out = upgrade("[install]\nrust = false\n").unwrap().unwrap();
+    assert!(
+        crate::config::Config::parse(&out)
+            .unwrap()
+            .install
+            .is_empty()
+    );
 }
 
 // A drive whose backup rules were written for rsync gets them rewritten as

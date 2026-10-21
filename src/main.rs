@@ -122,7 +122,7 @@ enum Command {
     Apply {
         #[arg(
             long,
-            help = "also update Homebrew and upgrade everything listed, and Rust, to the latest versions"
+            help = "also update Homebrew and upgrade everything listed to the latest versions"
         )]
         update: bool,
         #[arg(long, help = "only show what is not installed yet; changes nothing")]

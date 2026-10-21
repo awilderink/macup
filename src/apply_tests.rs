@@ -1,18 +1,17 @@
 use super::*;
 
-fn install(brew: &[&str], cask: &[&str], rust: bool) -> InstallConfig {
+fn install(brew: &[&str], cask: &[&str]) -> InstallConfig {
     let list = |l: &[&str]| l.iter().map(|s| s.to_string()).collect();
     InstallConfig {
         brew: list(brew),
         cask: list(cask),
-        rust,
     }
 }
 
 #[test]
 fn writes_one_brewfile_line_per_entry() {
     assert_eq!(
-        brewfile(&install(&["bat", "node@22"], &["ghostty"], false)),
+        brewfile(&install(&["bat", "node@22"], &["ghostty"])),
         "brew \"bat\"\nbrew \"node@22\"\ncask \"ghostty\"\n"
     );
 }
@@ -36,11 +35,5 @@ fn refuses_to_apply_without_the_drive() {
 // A Mac that only uses macup for backups must not be told to set anything up.
 #[test]
 fn nothing_listed_counts_as_installed() {
-    let dir = tempfile::tempdir().unwrap();
-    let e = Env::new(dir.path().join("home"), dir.path().join("Backup"));
-    assert!(installed(&e, &install(&[], &[], false)));
-    assert!(!installed(&e, &install(&[], &[], true)));
-    std::fs::create_dir_all(e.rustup().parent().unwrap()).unwrap();
-    std::fs::write(e.rustup(), "").unwrap();
-    assert!(installed(&e, &install(&[], &[], true)));
+    assert!(installed(&install(&[], &[])));
 }

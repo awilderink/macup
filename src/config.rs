@@ -18,7 +18,6 @@ pub struct Config {
 pub struct InstallConfig {
     pub brew: Vec<String>,
     pub cask: Vec<String>,
-    pub rust: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,12 +70,8 @@ impl InstallConfig {
         [(Kind::Brew, &self.brew), (Kind::Cask, &self.cask)]
     }
 
-    pub fn has_homebrew_items(&self) -> bool {
-        self.lists().iter().any(|(_, list)| !list.is_empty())
-    }
-
     pub fn is_empty(&self) -> bool {
-        !self.rust && !self.has_homebrew_items()
+        self.lists().iter().all(|(_, list)| list.is_empty())
     }
 
     pub fn installer_of(&self, name: &str) -> Option<Kind> {
@@ -125,14 +120,13 @@ fn suggest(key: &str) -> Option<&'static str> {
     match key {
         "apps" | "app" | "casks" => Some("cask"),
         "brews" | "formula" | "formulae" | "formulas" | "tools" => Some("brew"),
-        "rustup" => Some("rust"),
         _ => None,
     }
 }
 
 fn check_install_keys(table: &toml::Table) -> Result<()> {
     for key in table.keys() {
-        if Kind::ALL.iter().any(|k| k.key() == key) || key == "rust" {
+        if Kind::ALL.iter().any(|k| k.key() == key) {
             continue;
         }
         if key == "mas" {
@@ -140,7 +134,7 @@ fn check_install_keys(table: &toml::Table) -> Result<()> {
         }
         match suggest(key) {
             Some(right) => bail!("[install] has no {key:?}; did you mean {right:?}?"),
-            None => bail!("[install] has no {key:?}; it takes brew, cask and rust"),
+            None => bail!("[install] has no {key:?}; it takes brew and cask"),
         }
     }
     Ok(())

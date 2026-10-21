@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 const PREFERENCE: [Kind; 2] = [Kind::Cask, Kind::Brew];
-const RUST_NAMES: [&str; 2] = ["rust", "rustup"];
 
 struct ListsFile {
     path: PathBuf,
@@ -51,7 +50,7 @@ impl ListsFile {
             .with_context(|| format!("writing {}", self.path.display()))?;
         if self.upgraded {
             note(format!(
-                "updated {} to the current layout: the lists are under [install], apps is now cask, and the nix list is gone (rustup is now rust = true; git and curl come with macOS)",
+                "updated {} to the current layout: the lists are under [install], apps is now cask, and the nix list is gone (Rust is now the rust formula under brew; git and curl come with macOS)",
                 self.path.display()
             ));
         }
@@ -71,12 +70,7 @@ pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
     let mut file = ListsFile::open(e)?;
     let listed = file.install()?;
     let mut picked: Vec<(Kind, String)> = Vec::new();
-    let mut rust = false;
     for name in names {
-        if RUST_NAMES.contains(&name.as_str()) {
-            rust = true;
-            continue;
-        }
         if let Some(installer) = listed.installer_of(name) {
             ok(format!(
                 "{name} is already listed under install.{}",
@@ -97,15 +91,6 @@ pub fn add(e: &Env, names: &[String], forced: Option<Kind>) -> Result<()> {
         }
     }
     let mut added = Vec::new();
-    if rust && !listed.rust {
-        file.src = crate::tools::set_rust(&file.src)?;
-        added.push(format!(
-            "Turned on rust in {}: rustup and the stable toolchain, from Rust's own installer",
-            file.path.display()
-        ));
-    } else if rust {
-        ok("rust is already turned on in your config");
-    }
     for kind in PREFERENCE {
         let list: Vec<String> = picked
             .iter()
