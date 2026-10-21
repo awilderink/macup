@@ -3,7 +3,6 @@ use crate::copy::{Action, Existing, Job, Spec, log_path};
 use crate::env::Env;
 use crate::photos;
 use crate::picker::{pick_paths, presets};
-use crate::rules::Filter;
 use crate::selection::at_or_under;
 use crate::ui::{
     confirm_or_cancel, human_bytes, interactive, note, ok, plural, report_result, run_job, select,
@@ -23,7 +22,7 @@ pub struct Plan {
     pub changed_bytes: u64,
     pub newer_here_bytes: u64,
     pub newer_samples: Vec<String>,
-    pub skipped_libraries: Vec<String>,
+    pub skipped_units: Vec<String>,
 }
 
 impl Plan {
@@ -35,16 +34,7 @@ impl Plan {
         }
     }
 
-    fn add(&mut self, name: &str, size: u64, new: bool, newer_here: bool, target: &Path) {
-        if let Some(root) = library_root(name) {
-            if self.skipped_libraries.iter().any(|l| l == root) {
-                return;
-            }
-            if target.join(root).exists() {
-                self.skipped_libraries.push(root.to_string());
-                return;
-            }
-        }
+    fn add(&mut self, name: &str, size: u64, new: bool, newer_here: bool) {
         if new {
             self.new_files += 1;
             self.new_bytes += size;
@@ -60,11 +50,6 @@ impl Plan {
             }
         }
     }
-}
-
-pub fn library_root(name: &str) -> Option<&str> {
-    let i = name.find(".photoslibrary/")?;
-    Some(&name[..i + ".photoslibrary".len()])
 }
 
 #[derive(Default)]
@@ -159,10 +144,14 @@ pub fn restore_paths(e: &Env, req: &Request) -> Result<()> {
     )?;
     print_plan(&plan);
     if plan.new_files + plan.changed == 0 {
-        ok(format!(
-            "Everything selected is already up to date in {}",
-            target.display()
-        ));
+        if plan.skipped_units.is_empty() {
+            ok(format!(
+                "Everything selected is already up to date in {}",
+                target.display()
+            ));
+        } else {
+            note("nothing else to restore");
+        }
         return Ok(());
     }
     if req.dry_run {
@@ -194,7 +183,7 @@ pub fn restore_paths(e: &Env, req: &Request) -> Result<()> {
             false,
         )?;
     }
-    run_restore(e, target, paths, mode, &plan.skipped_libraries)
+    run_restore(e, target, paths, mode)
 }
 
 fn choose_mode(plan: &Plan) -> Result<Existing> {
@@ -226,28 +215,24 @@ fn choose_mode(plan: &Plan) -> Result<Existing> {
     )
 }
 
-fn restore_spec(
-    e: &Env,
-    target: &Path,
-    paths: &[String],
-    mode: Existing,
-    skip: &[String],
-) -> Result<Spec> {
-    let skip: Vec<String> = skip.iter().map(|lib| format!("/{lib}/")).collect();
-    Ok(Spec {
+fn restore_spec(e: &Env, target: &Path, paths: &[String], mode: Existing) -> Spec {
+    Spec {
         src: e.backup_home(),
         dst: target.to_path_buf(),
-        filter: Filter::skipping(&skip)?,
         selection: Some(paths.to_vec()),
         existing: mode,
+        skip_existing_units: true,
         ..Spec::default()
-    })
+    }
 }
 
 fn plan(e: &Env, target: &Path, paths: &[String]) -> Result<Plan> {
-    let spec = restore_spec(e, target, paths, Existing::Overwrite, &[])?;
-    let mut plan = Plan::default();
-    for action in crate::copy::plan(&spec).actions {
+    let copy = crate::copy::plan(&restore_spec(e, target, paths, Existing::Overwrite));
+    let mut plan = Plan {
+        skipped_units: copy.skipped_units,
+        ..Plan::default()
+    };
+    for action in copy.actions {
         if let Action::File {
             rel,
             size,
@@ -255,7 +240,7 @@ fn plan(e: &Env, target: &Path, paths: &[String]) -> Result<Plan> {
             newer_there,
         } = action
         {
-            plan.add(&rel, size, new, newer_there, target);
+            plan.add(&rel, size, new, newer_there);
         }
     }
     Ok(plan)
@@ -263,10 +248,16 @@ fn plan(e: &Env, target: &Path, paths: &[String]) -> Result<Plan> {
 
 fn print_plan(p: &Plan) {
     step("Restore preview");
-    for lib in &p.skipped_libraries {
-        warn(format!(
-            "skipping {lib}: a Photos library already exists there, and copying another library into it would damage it"
-        ));
+    for unit in &p.skipped_units {
+        if unit.ends_with(".photoslibrary") {
+            warn(format!(
+                "skipping {unit}: a Photos library already exists there, and copying another library into it would damage it"
+            ));
+        } else {
+            warn(format!(
+                "skipping {unit}: a git repo already exists there, and merging the backup into it would bring back files from other branches; move it aside to restore the backup's copy"
+            ));
+        }
     }
     note(format!(
         "{} ({})",
@@ -299,13 +290,7 @@ fn touches(paths: &[String], dir: &str) -> bool {
     paths.iter().any(|p| at_or_under(p, dir))
 }
 
-fn run_restore(
-    e: &Env,
-    target: &Path,
-    paths: &[String],
-    mode: Existing,
-    skip: &[String],
-) -> Result<()> {
+fn run_restore(e: &Env, target: &Path, paths: &[String], mode: Existing) -> Result<()> {
     if touches(paths, "Library")
         && let Some(g) = full_disk_access_guard(e, "restore")
     {
@@ -313,7 +298,7 @@ fn run_restore(
     }
     let _lock = Lock::acquire(&e.lock_dir())?;
     let job = Job {
-        spec: restore_spec(e, target, paths, mode, skip)?,
+        spec: restore_spec(e, target, paths, mode),
         log_path: log_path(e, "restore"),
         strict: false,
     };
@@ -332,7 +317,7 @@ fn run_restore(
 }
 
 pub fn shell_restore(e: &Env, paths: &[String]) -> Result<()> {
-    run_restore(e, &e.home, paths, Existing::KeepNewer, &[])
+    run_restore(e, &e.home, paths, Existing::KeepNewer)
 }
 
 fn fix_ssh_permissions(dir: &Path) {

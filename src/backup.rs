@@ -1,5 +1,5 @@
 use crate::access::full_disk_access_guard;
-use crate::copy::{Job, Spec, log_path, plan};
+use crate::copy::{Job, Mirror, Spec, log_path, plan};
 use crate::env::Env;
 use crate::guard::{Check, Guard, precomputed, resolve};
 use crate::photos::{self, PhotoLibrary};
@@ -33,7 +33,7 @@ pub fn backup_spec(e: &Env, o: &Options) -> Result<Spec> {
         src: e.home.clone(),
         dst: e.backup_home(),
         filter: Filter::backup(&e.config, &o.excludes)?,
-        mirror: o.mirror,
+        mirror: if o.mirror { Mirror::All } else { Mirror::Repos },
         ..Spec::default()
     })
 }

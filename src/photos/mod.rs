@@ -2,7 +2,7 @@ pub mod archive;
 pub mod library;
 pub mod photokit;
 
-use crate::copy::{Job, Spec, log_path, plan};
+use crate::copy::{Job, Mirror, Spec, log_path, plan};
 use crate::env::Env;
 use crate::pattern::Pattern;
 use crate::rules::Filter;
@@ -70,7 +70,7 @@ fn photo_spec(src: &Path, dst: &Path) -> Result<Spec> {
         dst: dst.to_path_buf(),
         filter: Filter::skipping(&["/database/Photos.sqlite*".to_string()])?,
         hide: vec![Pattern::parse("/resources/cpl/")?],
-        mirror: true,
+        mirror: Mirror::All,
         ..Spec::default()
     })
 }

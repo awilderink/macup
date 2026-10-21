@@ -202,7 +202,7 @@ fn mirror_deletes_what_is_gone_but_keeps_what_the_rules_leave_out() {
         write(&spec.dst.join(f), "x");
     }
     spec.filter = Filter::skipping(&["/skipped".to_string()]).unwrap();
-    spec.mirror = true;
+    spec.mirror = Mirror::All;
     let p = plan(&spec);
     let mut gone: Vec<&str> = p.deletions().collect();
     gone.sort();
@@ -222,7 +222,7 @@ fn hidden_paths_are_not_copied_and_removed_from_a_mirror() {
     write(&spec.src.join("resources/derivatives/t.jpg"), "x");
     write(&spec.dst.join("resources/cpl/old.bin"), "x");
     spec.hide = vec![Pattern::parse("/resources/cpl/").unwrap()];
-    spec.mirror = true;
+    spec.mirror = Mirror::All;
     assert!(run(&spec).finished());
     assert!(spec.dst.join("resources/derivatives/t.jpg").exists());
     assert!(!spec.dst.join("resources/cpl").exists());
@@ -318,7 +318,7 @@ fn mirror_keeps_skipped_files_inside_a_folder_that_is_gone() {
         write(&spec.dst.join(f), "x");
     }
     spec.filter = Filter::skipping(&[".DS_Store".to_string()]).unwrap();
-    spec.mirror = true;
+    spec.mirror = Mirror::All;
     let mut gone: Vec<String> = plan(&spec).deletions().map(str::to_string).collect();
     gone.sort();
     assert_eq!(gone, vec!["gone/a.txt", "gone/sub", "gone/sub/b.txt"]);
@@ -343,4 +343,53 @@ fn a_failing_extended_attribute_keeps_the_file() {
         notes.iter().any(|n| n.contains("com.example.tag")),
         "{notes:?}"
     );
+}
+
+// A backup never deletes, except inside a git repo: there the copy follows
+// the Mac, otherwise every branch ever checked out piles up on the drive and
+// comes back as stray files on restore. Skipped files and everything outside
+// repos stay.
+#[test]
+fn a_git_repo_is_mirrored_even_without_mirror_mode() {
+    let (_dir, mut spec) = setup();
+    write(&spec.src.join("code/app/.git/HEAD"), "ref");
+    write(&spec.src.join("code/app/src/main.rs"), "fn main() {}");
+    for f in [
+        "code/app/src/old_branch.rs",
+        "code/app/.git/objects/ab/stale",
+        "code/app/node_modules/x/index.js",
+        "code/notes.txt",
+    ] {
+        write(&spec.dst.join(f), "x");
+    }
+    spec.filter = Filter::skipping(&["node_modules".to_string()]).unwrap();
+    spec.mirror = Mirror::Repos;
+    assert!(run(&spec).finished());
+    assert!(spec.dst.join("code/app/src/main.rs").exists());
+    assert!(!spec.dst.join("code/app/src/old_branch.rs").exists());
+    assert!(!spec.dst.join("code/app/.git/objects/ab").exists());
+    assert!(spec.dst.join("code/app/node_modules/x/index.js").exists());
+    assert!(spec.dst.join("code/notes.txt").exists());
+}
+
+// Restoring into a repo that exists on the Mac would mix two states of it, so
+// the repo is left alone unless a path inside it was picked; a repo missing on
+// the Mac comes back whole.
+#[test]
+fn a_restore_leaves_an_existing_git_repo_alone() {
+    let (_dir, mut spec) = setup();
+    for repo in ["code/here", "code/gone"] {
+        write(&spec.src.join(repo).join(".git/HEAD"), "ref");
+        write(&spec.src.join(repo).join("old.rs"), "old");
+    }
+    write(&spec.dst.join("code/here/.git/HEAD"), "ref");
+    spec.skip_existing_units = true;
+    spec.selection = Some(vec!["code".to_string()]);
+    assert_eq!(plan(&spec).skipped_units, vec!["code/here"]);
+    assert!(run(&spec).finished());
+    assert!(!spec.dst.join("code/here/old.rs").exists());
+    assert!(spec.dst.join("code/gone/old.rs").exists());
+    spec.selection = Some(vec!["code/here/old.rs".to_string()]);
+    assert!(run(&spec).finished());
+    assert!(spec.dst.join("code/here/old.rs").exists());
 }

@@ -25,6 +25,14 @@ pub enum Existing {
     OnlyMissing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mirror {
+    #[default]
+    Off,
+    Repos,
+    All,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
     pub src: PathBuf,
@@ -33,7 +41,8 @@ pub struct Spec {
     pub hide: Vec<Pattern>,
     pub selection: Option<Vec<String>>,
     pub existing: Existing,
-    pub mirror: bool,
+    pub mirror: Mirror,
+    pub skip_existing_units: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +74,7 @@ pub struct Plan {
     pub actions: Vec<Action>,
     pub problems: Vec<String>,
     pub specials: usize,
+    pub skipped_units: Vec<String>,
 }
 
 impl Plan {
@@ -132,6 +142,17 @@ impl Spec {
     fn wanted(&self, rel: &str, is_dir: bool) -> bool {
         !self.hidden(rel, is_dir) && self.filter.copies(rel, is_dir)
     }
+
+    fn leaves_existing(&self, rel: &str, reach: &Reach) -> bool {
+        if !self.skip_existing_units {
+            return false;
+        }
+        if rel.ends_with(".photoslibrary") {
+            return true;
+        }
+        let repo = |root: &Path| std::fs::symlink_metadata(root.join(rel).join(".git")).is_ok();
+        matches!(reach, Reach::Full) && repo(&self.src) && repo(&self.dst)
+    }
 }
 
 fn sorted_entries(dir: &Path) -> std::io::Result<Vec<(String, std::fs::FileType)>> {
@@ -162,11 +183,11 @@ fn same_time(a: SystemTime, b: SystemTime) -> bool {
 
 pub fn plan(spec: &Spec) -> Plan {
     let mut plan = Plan::default();
-    walk(spec, "", &mut plan);
+    walk(spec, "", spec.mirror == Mirror::All, &mut plan);
     plan
 }
 
-fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
+fn walk(spec: &Spec, dir: &str, mirroring: bool, plan: &mut Plan) {
     let src_dir = spec.src.join(dir);
     let dst_dir = spec.dst.join(dir);
     let entries = match sorted_entries(&src_dir) {
@@ -177,6 +198,8 @@ fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
             return;
         }
     };
+    let mirroring =
+        mirroring || (spec.mirror == Mirror::Repos && entries.iter().any(|(n, _)| n == ".git"));
     let mut kept: HashSet<String> = HashSet::new();
     for (name, ft) in &entries {
         let rel = join_rel(dir, name);
@@ -188,6 +211,10 @@ fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
         kept.insert(name.clone());
         let dst = spec.dst.join(&rel);
         let there = std::fs::symlink_metadata(&dst).ok();
+        if is_dir && there.is_some() && spec.leaves_existing(&rel, &reach) {
+            plan.skipped_units.push(rel);
+            continue;
+        }
         if is_dir {
             if there.as_ref().is_some_and(|m| !m.is_dir()) {
                 plan.actions.push(Action::Delete {
@@ -199,7 +226,7 @@ fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
                 rel: rel.clone(),
                 implied: matches!(reach, Reach::Through),
             });
-            walk(spec, &rel, plan);
+            walk(spec, &rel, mirroring, plan);
         } else if ft.is_symlink() {
             let target = std::fs::read_link(spec.src.join(&rel)).ok();
             let same = there.as_ref().is_some_and(|m| m.file_type().is_symlink())
@@ -264,7 +291,7 @@ fn walk(spec: &Spec, dir: &str, plan: &mut Plan) {
             plan.actions.push(Action::Cleanup { rel });
             continue;
         }
-        if !spec.mirror || kept.contains(&name) {
+        if !mirroring || kept.contains(&name) {
             continue;
         }
         let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());

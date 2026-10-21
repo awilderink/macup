@@ -2,7 +2,7 @@
 
 Back up your Mac to an external drive, bring it back after a reinstall, and keep your tools and apps in one place.
 
-- **Backup:** your home folder and Photos library go to an external drive. A backup only adds and updates; it never deletes anything unless you ask.
+- **Backup:** your home folder and Photos library go to an external drive. A backup only adds and updates; outside git repos it never deletes anything unless you ask.
 - **Restore:** browse the backup as a tree and pick what to bring back. Files that are newer on the Mac are kept.
 - **Tools and apps:** `macup add firefox ripgrep` installs a Mac app and a command-line tool and remembers both, so a fresh Mac gets them back.
 
@@ -44,6 +44,7 @@ Every command has `--help`.
 
 - **Only what matters is copied.** Caches, logs, `node_modules`, toolchains that install themselves again, and per-machine macOS state are skipped. From `~/Library` only `Application Support` is kept. You can skip more or include something back (see [Settings](#settings)).
 - **Nothing is deleted.** Files you deleted on the Mac stay in the backup. To remove them as well, use `macup backup --mirror` (in the menu: "Clean up the backup"). It first shows how many files would go and asks.
+- **Except inside git repos.** A folder with a `.git` in it is copied as it is now: files gone from the repo, such as files from a branch you switched away from, are removed from its backup too. Otherwise every branch you ever checked out would pile up in the backup and come back as stray files on a restore. Files your rules skip, like `node_modules`, are left alone. Repos that exist only on the drive stay untouched.
 - **First backup from a new Mac:** if the drive already holds a backup for this Mac, macup warns first. A fresh Mac's default settings would otherwise replace your old ones, so restore what you need before backing up.
 - **Full Disk Access:** give your terminal Full Disk Access in System Settings → Privacy & Security, or protected folders in `~/Library` are left out. `macup status` tells you whether it has it.
 - **Copies are faithful and safe.** Each file keeps its modification and creation dates, permissions and extended attributes, and symlinks stay symlinks. A file is written next to its old copy and only swapped in once complete, so an interrupted backup never leaves a half-written file; ctrl+c stops right away and leaves the file it was copying as it was. Sockets and pipes are not copied.
@@ -55,6 +56,7 @@ Every command has `--help`.
 
 - **You see a preview first:** how much will be copied and which files are newer on this Mac.
 - **Newer files on the Mac are kept.** A restore never deletes anything. If files differ, you choose: keep the newer ones, only add missing files, or take the backup's version.
+- **Git repos are restored whole or not at all.** A repo that already exists on the Mac is skipped with a warning, because merging the backup into it would mix in files from other states of the repo; move it aside to get the backup's copy. Picking a path inside the repo still restores just that path.
 - **Without the picker:** `macup restore --path .ssh --path Documents/taxes`, with `--replace` to take the backup's version anyway or `--skip-existing` to only add missing files.
 - **SSH keys** get the right permissions again after a restore.
 - **Several Macs on one drive:** macup restores from this Mac's backup. If there is none, for example after a reinstall that changed the Mac's name, it uses the only Mac on the drive. `--from <name>` picks another.
